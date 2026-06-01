@@ -5,6 +5,14 @@
 #include <intrin.h>
 #endif
 
+static size_t WideStrLen(const WCHAR* value) {
+    size_t length = 0;
+    while (value[length]) {
+        ++length;
+    }
+    return length;
+}
+
 PPEB GetPEB() {
 #ifdef _WIN64
     return (PPEB)__readgsqword(0x60);
@@ -15,6 +23,11 @@ PPEB GetPEB() {
 
 bool IsModuleMatch(PLDR_DATA_TABLE_ENTRY module, const WCHAR* fullModuleName) {
     if (!module->FullDllName.Buffer || module->FullDllName.Length <= 0) {
+        return false;
+    }
+
+    size_t targetLength = WideStrLen(fullModuleName);
+    if (module->FullDllName.Length != targetLength * sizeof(WCHAR)) {
         return false;
     }
 
@@ -34,20 +47,13 @@ bool IsModuleMatch(PLDR_DATA_TABLE_ENTRY module, const WCHAR* fullModuleName) {
 
 PVOID FindModuleInList(PPEB_LDR_DATA ldr, const WCHAR* fullModuleName) {
     PLIST_ENTRY head = &ldr->InMemoryOrderModuleList;
-    PLIST_ENTRY entry = head->Flink;
-    PLIST_ENTRY mark = entry;
-
-    do {
-        entry = entry - 1;
-        PLDR_DATA_TABLE_ENTRY module = (PLDR_DATA_TABLE_ENTRY)entry;
+    for (PLIST_ENTRY entry = head->Flink; entry != head; entry = entry->Flink) {
+        PLDR_DATA_TABLE_ENTRY module = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks);
         
         if (IsModuleMatch(module, fullModuleName)) {
             return module->DllBase;
         }
-
-        entry = entry + 1;
-        entry = module->InMemoryOrderLinks.Flink;
-    } while (entry != mark);
+    }
 
     return nullptr;
 }
@@ -60,4 +66,4 @@ PVOID GetModuleHandleN(const WCHAR* fullModuleName) {
     if (!ldr) return nullptr;
 
     return FindModuleInList(ldr, fullModuleName);
-} 
+}

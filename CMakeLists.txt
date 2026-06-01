@@ -24,5 +24,10 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/distorm.cmake)
 add_subdirectory(src/hooknt)
 add_subdirectory(src/ntdlln)
 
+include(CTest)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
+
 # Set startup project for Visual Studio
-set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT hooknt) 
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT hooknt)

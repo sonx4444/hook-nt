@@ -1,0 +1,36 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -A x64
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Runtime smoke test
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\smoke.ps1 -SkipBuild
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist\hooknt-windows-x64
+          Copy-Item build\bin\Release\hooknt.exe dist\hooknt-windows-x64
+          Copy-Item build\bin\Release\ntdlln.dll dist\hooknt-windows-x64
+          Copy-Item build\bin\Release\test_file_ops.exe dist\hooknt-windows-x64
+          Compress-Archive -Path dist\hooknt-windows-x64 -DestinationPath dist\hooknt-windows-x64.zip
+          (Get-FileHash dist\hooknt-windows-x64.zip -Algorithm SHA256).Hash + "  hooknt-windows-x64.zip" | Out-File dist\SHA256SUMS.txt -Encoding ascii
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/hooknt-windows-x64.zip dist/SHA256SUMS.txt --generate-notes --title "${{ github.ref_name }}"

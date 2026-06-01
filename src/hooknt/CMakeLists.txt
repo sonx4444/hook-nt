@@ -4,6 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 # Source files
 set(HOOKNT_SOURCES
     main.cpp
+    hook_registry.cpp
     process_manager.cpp
     hook_manager.cpp
     memory_utils.cpp
@@ -11,6 +12,7 @@ set(HOOKNT_SOURCES
 
 set(HOOKNT_HEADERS
     ../include/process_manager.h
+    ../include/hook_registry.h
     ../include/hook_manager.h
     ../include/memory_utils.h
     ../include/common.h
@@ -43,4 +45,4 @@ set_target_properties(hooknt PROPERTIES
 # Set working directory for debugging
 set_target_properties(hooknt PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-) 
+)

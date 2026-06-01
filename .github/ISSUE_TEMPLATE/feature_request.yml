@@ -1,0 +1,20 @@
+name: Feature request
+description: Propose an improvement to HookNt
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: Explain the research workflow this would improve.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the expected interface or output.
+    validations:
+      required: true

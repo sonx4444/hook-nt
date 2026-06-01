@@ -2,6 +2,7 @@
 #include "process_manager.h"
 #include "memory_utils.h"
 #include <distorm.h>
+#include <vector>
 
 bool HookFunction(HANDLE hProcess, PVOID ntdllBase, PVOID ntdllNBase, const char* functionName) {
     // Get the address of the original NT function
@@ -32,7 +33,7 @@ bool HookFunction(HANDLE hProcess, PVOID ntdllBase, PVOID ntdllNBase, const char
     }
 
     // Allocate memory for the trampoline
-    PVOID trampolineMemory = VirtualAllocEx(hProcess, NULL, TRAMPOLINE_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    PVOID trampolineMemory = VirtualAllocEx(hProcess, NULL, TRAMPOLINE_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!trampolineMemory) {
         printf("[!] Failed to allocate trampoline memory\n");
         return false;
@@ -47,7 +48,14 @@ bool HookFunction(HANDLE hProcess, PVOID ntdllBase, PVOID ntdllNBase, const char
     }
 
     // Patch the original NT function to jump to the hooked function
-    return PatchFunction(hProcess, originalFunction, hookedFunction, trampolineMemory);
+    if (!PatchFunction(hProcess, originalFunction, hookedFunction, trampolineMemory)) {
+        PVOID emptyTrampoline = nullptr;
+        WriteProcessMemory(hProcess, trampolineVarAddr, &emptyTrampoline, sizeof(PVOID), nullptr);
+        VirtualFreeEx(hProcess, trampolineMemory, 0, MEM_RELEASE);
+        return false;
+    }
+
+    return true;
 }
 
 size_t CalculatePatchSize(HANDLE hProcess, PVOID address) {
@@ -57,26 +65,24 @@ size_t CalculatePatchSize(HANDLE hProcess, PVOID address) {
     
     if (!ReadProcessMemory(hProcess, address, buffer, sizeof(buffer), &bytesRead)) {
         printf("[!] Failed to read memory at %p for patch calculation\n", address);
-        return PATCH_SIZE; // fallback to fixed size
+        return 0;
     }
 
     // Use DiStorm to disassemble the instructions
-    _DecodedInst decodedInstructions[10];
+    _CodeInfo codeInfo = {};
+    codeInfo.codeOffset = (_OffsetType)(ULONG_PTR)address;
+    codeInfo.code = buffer;
+    codeInfo.codeLen = (int)bytesRead;
+    codeInfo.dt = Decode64Bits;
+
+    _DInst decodedInstructions[16];
     unsigned int decodedInstructionsCount = 0;
     
-    _DecodeResult result = distorm_decode64(
-        ((_OffsetType)(ULONG_PTR)address),  // Code offset 
-        buffer,                             // Buffer to decode
-        (int)bytesRead,                     // Buffer size
-        Decode64Bits,                       // Decode mode for x64
-        decodedInstructions,                // Output array
-        10,                                 // Max instructions
-        &decodedInstructionsCount           // Output count
-    );
+    _DecodeResult result = distorm_decompose64(&codeInfo, decodedInstructions, 16, &decodedInstructionsCount);
     
-    if (result != DECRES_SUCCESS) {
-        printf("[!] Failed to disassemble instructions at %p, using fallback size\n", address);
-        return PATCH_SIZE; // fallback to fixed size
+    if ((result != DECRES_SUCCESS && result != DECRES_MEMORYERR) || decodedInstructionsCount == 0) {
+        printf("[!] Failed to disassemble instructions at %p\n", address);
+        return 0;
     }
 
     // Calculate the minimum size needed for our 14-byte patch
@@ -85,14 +91,27 @@ size_t CalculatePatchSize(HANDLE hProcess, PVOID address) {
     size_t i = 0;
     
     while (totalSize < PATCH_SIZE && i < decodedInstructionsCount) {
+        const _DInst& instruction = decodedInstructions[i];
+        if (instruction.flags == FLAG_NOT_DECODABLE || (instruction.flags & FLAG_RIP_RELATIVE)) {
+            printf("[!] Unsupported RIP-relative or undecodable instruction in trampoline\n");
+            return 0;
+        }
+
+        for (unsigned int operandIndex = 0; operandIndex < instruction.opsNo; ++operandIndex) {
+            if (instruction.ops[operandIndex].type == O_PC) {
+                printf("[!] Unsupported relative control-flow instruction in trampoline\n");
+                return 0;
+            }
+        }
+
         totalSize += decodedInstructions[i].size;
         i++;
     }
 
     // Ensure we have at least PATCH_SIZE bytes for our absolute jump
     if (totalSize < PATCH_SIZE) {
-        printf("[!] Warning: Could only calculate %zu bytes, using %d as minimum\n", totalSize, PATCH_SIZE);
-        return PATCH_SIZE;
+        printf("[!] Could only calculate %zu safe bytes; need at least %d\n", totalSize, PATCH_SIZE);
+        return 0;
     }
 
     printf("[+] Calculated patch size: %zu bytes for %zu instructions\n", totalSize, i);
@@ -131,23 +150,28 @@ bool CreateTrampoline(HANDLE hProcess, PVOID originalFunction, PVOID trampolineA
     CustomMemCpy(trampolineCode + patchSize, jumpBackCode, sizeof(jumpBackCode));
 
     // Write the trampoline code
+    if (!WriteProcessMemory(hProcess, trampolineAddress, trampolineCode, patchSize + PATCH_SIZE, nullptr)) {
+        printf("[!] WriteProcessMemory failed: %d\n", GetLastError());
+        delete[] originalBytes;
+        delete[] trampolineCode;
+        return false;
+    }
+
     DWORD oldProtect;
-    if (!VirtualProtectEx(hProcess, trampolineAddress, patchSize + PATCH_SIZE, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+    if (!VirtualProtectEx(hProcess, trampolineAddress, patchSize + PATCH_SIZE, PAGE_EXECUTE_READ, &oldProtect)) {
         printf("[!] VirtualProtectEx failed: %d\n", GetLastError());
         delete[] originalBytes;
         delete[] trampolineCode;
         return false;
     }
 
-    if (!WriteProcessMemory(hProcess, trampolineAddress, trampolineCode, patchSize + PATCH_SIZE, nullptr)) {
-        printf("[!] WriteProcessMemory failed: %d\n", GetLastError());
-        VirtualProtectEx(hProcess, trampolineAddress, patchSize + PATCH_SIZE, oldProtect, &oldProtect);
+    if (!FlushInstructionCache(hProcess, trampolineAddress, patchSize + PATCH_SIZE)) {
+        printf("[!] FlushInstructionCache failed: %d\n", GetLastError());
         delete[] originalBytes;
         delete[] trampolineCode;
         return false;
     }
 
-    VirtualProtectEx(hProcess, trampolineAddress, patchSize + PATCH_SIZE, oldProtect, &oldProtect);
     delete[] originalBytes;
     delete[] trampolineCode;
     return true;
@@ -180,16 +204,31 @@ bool PatchFunction(HANDLE hProcess, PVOID originalFunction, PVOID newAddress, PV
     *(DWORD*)&shellcode[9] = (DWORD)((UINT64)newAddress >> 32);
 
     DWORD oldProtect;
-    if (!VirtualProtectEx(hProcess, originalFunction, sizeof(shellcode), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+    if (!VirtualProtectEx(hProcess, originalFunction, patchSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
         printf("VirtualProtectEx failed: %d\n", GetLastError());
         return false;
     }
 
+    std::vector<BYTE> patch(patchSize, 0x90);
+    CustomMemCpy(patch.data(), shellcode, sizeof(shellcode));
+
     // Copy the shellcode to the target address
-    WriteProcessMemory(hProcess, originalFunction, shellcode, sizeof(shellcode), NULL);
+    if (!WriteProcessMemory(hProcess, originalFunction, patch.data(), patch.size(), NULL)) {
+        printf("[!] WriteProcessMemory failed: %d\n", GetLastError());
+        VirtualProtectEx(hProcess, originalFunction, patchSize, oldProtect, &oldProtect);
+        return false;
+    }
 
     // Restore the original protection
-    VirtualProtectEx(hProcess, originalFunction, sizeof(shellcode), oldProtect, &oldProtect);
+    if (!VirtualProtectEx(hProcess, originalFunction, patchSize, oldProtect, &oldProtect)) {
+        printf("[!] VirtualProtectEx restore failed: %d\n", GetLastError());
+        return false;
+    }
+
+    if (!FlushInstructionCache(hProcess, originalFunction, patchSize)) {
+        printf("[!] FlushInstructionCache failed: %d\n", GetLastError());
+        return false;
+    }
 
     return true;
-} 
+}

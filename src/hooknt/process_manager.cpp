@@ -1,6 +1,10 @@
 #include "process_manager.h"
 #include "memory_utils.h"
 
+static bool IsRangeWithin(SIZE_T offset, SIZE_T length, SIZE_T bufferSize) {
+    return offset <= bufferSize && length <= bufferSize - offset;
+}
+
 HANDLE CreateSuspendedProcess(const wchar_t* programPath, DWORD* pidOut) {
     STARTUPINFOW si = { sizeof(si) };
     PROCESS_INFORMATION pi;
@@ -27,6 +31,9 @@ PVOID FindNtdllBase(HANDLE hProcess) {
     // Get the NtQueryVirtualMemory function address
     NtQueryVirtualMemory_proc NtQueryVirtualMemory = 
         (NtQueryVirtualMemory_proc)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryVirtualMemory");
+    if (!NtQueryVirtualMemory) {
+        return nullptr;
+    }
 
     while (NT_SUCCESS(NtQueryVirtualMemory(hProcess, address, MemoryBasicInformation, &mbi, sizeof(mbi), &returnLength))) {
         if (mbi.State != MEM_COMMIT || mbi.Type != MEM_IMAGE) {
@@ -54,6 +61,12 @@ PVOID InjectDll(HANDLE hProcess, const wchar_t* dllPath) {
     }
 
     DWORD dwDllSize = GetFileSize(hFile, NULL);
+    if (dwDllSize == INVALID_FILE_SIZE || dwDllSize == 0) {
+        printf("[!] GetFileSize failed: %d\n", GetLastError());
+        CloseHandle(hFile);
+        return nullptr;
+    }
+
     LPVOID lpDllBuffer = VirtualAlloc(NULL, dwDllSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!lpDllBuffer) {
         printf("[!] VirtualAlloc failed: %d\n", GetLastError());
@@ -61,7 +74,8 @@ PVOID InjectDll(HANDLE hProcess, const wchar_t* dllPath) {
         return nullptr;
     }
 
-    if (!ReadFile(hFile, lpDllBuffer, dwDllSize, NULL, NULL)) {
+    DWORD bytesRead = 0;
+    if (!ReadFile(hFile, lpDllBuffer, dwDllSize, &bytesRead, NULL) || bytesRead != dwDllSize) {
         printf("[!] ReadFile failed: %d\n", GetLastError());
         VirtualFree(lpDllBuffer, 0, MEM_RELEASE);
         CloseHandle(hFile);
@@ -70,7 +84,7 @@ PVOID InjectDll(HANDLE hProcess, const wchar_t* dllPath) {
 
     CloseHandle(hFile);
 
-    PVOID dllBase = ReflectiveDLLInject(hProcess, (PBYTE)lpDllBuffer);
+    PVOID dllBase = ReflectiveDLLInject(hProcess, (PBYTE)lpDllBuffer, dwDllSize);
     VirtualFree(lpDllBuffer, 0, MEM_RELEASE);
     return dllBase;
 }
@@ -139,11 +153,16 @@ PVOID GetProcAddressRemote(HANDLE hProcess, PBYTE dllBase, const char* functionN
             printf("[!] Failed to read function name. Error: %lu\n", GetLastError());
             continue;
         }
+        currentFunctionName[sizeof(currentFunctionName) - 1] = '\0';
 
         // Compare the function name with the target name
         if (CustomStrCmp(currentFunctionName, functionName) == 0) {
             // Get the ordinal corresponding to this name
             WORD ordinal = addressOfNameOrdinals[i];
+            if (ordinal >= exportDir.NumberOfFunctions) {
+                printf("[!] Invalid export ordinal.\n");
+                break;
+            }
 
             // Get the function's RVA and compute its absolute address
             DWORD functionRVA = addressOfFunctions[ordinal];
@@ -179,22 +198,42 @@ DWORD GetMemoryProtection(DWORD characteristics) {
     else return PAGE_NOACCESS;
 }
 
-PVOID ReflectiveDLLInject(HANDLE hProcess, PBYTE lpDllBuffer) {
+PVOID ReflectiveDLLInject(HANDLE hProcess, PBYTE lpDllBuffer, SIZE_T dllFileSize) {
     // Step 1: Parse the DLL headers
+    if (!lpDllBuffer || dllFileSize < sizeof(IMAGE_DOS_HEADER)) {
+        printf("[!] DLL image is too small.\n");
+        return nullptr;
+    }
+
     PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)lpDllBuffer;
-    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE) {
+    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE || dosHeader->e_lfanew < 0 ||
+        !IsRangeWithin((SIZE_T)dosHeader->e_lfanew, sizeof(IMAGE_NT_HEADERS), dllFileSize)) {
         printf("[!] Invalid DOS signature.\n");
         return nullptr;
     }
 
     PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS)(lpDllBuffer + dosHeader->e_lfanew);
-    if (ntHeaders->Signature != IMAGE_NT_SIGNATURE) {
+    if (ntHeaders->Signature != IMAGE_NT_SIGNATURE ||
+        ntHeaders->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
         printf("[!] Invalid NT signature.\n");
+        return nullptr;
+    }
+
+    SIZE_T sectionHeadersOffset = (PBYTE)IMAGE_FIRST_SECTION(ntHeaders) - lpDllBuffer;
+    SIZE_T sectionHeadersSize = ntHeaders->FileHeader.NumberOfSections * sizeof(IMAGE_SECTION_HEADER);
+    if (!IsRangeWithin(sectionHeadersOffset, sectionHeadersSize, dllFileSize)) {
+        printf("[!] Invalid section headers.\n");
         return nullptr;
     }
     
     // Step 2: Allocate memory for the DLL in the remote process
     SIZE_T dllImageSize = ntHeaders->OptionalHeader.SizeOfImage;
+    if (dllImageSize == 0 || ntHeaders->OptionalHeader.SizeOfHeaders > dllFileSize ||
+        ntHeaders->OptionalHeader.SizeOfHeaders > dllImageSize) {
+        printf("[!] Invalid DLL image size.\n");
+        return nullptr;
+    }
+
     PBYTE remoteDllBase = (PBYTE)VirtualAllocEx(hProcess, NULL, dllImageSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!remoteDllBase) {
         printf("[!] VirtualAllocEx failed: %d\n", GetLastError());
@@ -205,6 +244,7 @@ PVOID ReflectiveDLLInject(HANDLE hProcess, PBYTE lpDllBuffer) {
     PBYTE localDllBase = (PBYTE)VirtualAlloc(NULL, dllImageSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!localDllBase) {
         printf("[!] VirtualAlloc failed: %d\n", GetLastError());
+        VirtualFreeEx(hProcess, remoteDllBase, 0, MEM_RELEASE);
         return nullptr;
     }
 
@@ -214,23 +254,54 @@ PVOID ReflectiveDLLInject(HANDLE hProcess, PBYTE lpDllBuffer) {
     // Step 5: Copy each section
     PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(ntHeaders);
     for (int i = 0; i < ntHeaders->FileHeader.NumberOfSections; i++) {
+        if (!IsRangeWithin(section[i].PointerToRawData, section[i].SizeOfRawData, dllFileSize) ||
+            !IsRangeWithin(section[i].VirtualAddress, section[i].SizeOfRawData, dllImageSize)) {
+            printf("[!] Invalid DLL section range.\n");
+            VirtualFree(localDllBase, 0, MEM_RELEASE);
+            VirtualFreeEx(hProcess, remoteDllBase, 0, MEM_RELEASE);
+            return nullptr;
+        }
+
         BYTE* dest = (BYTE*)localDllBase + section[i].VirtualAddress;
         BYTE* src = (BYTE*)lpDllBuffer + section[i].PointerToRawData;
         CustomMemCpy(dest, src, section[i].SizeOfRawData);
     }
 
     // Step 6: Perform relocations if the allocated base is different from the preferred base
-    SIZE_T delta = (SIZE_T)(remoteDllBase - ntHeaders->OptionalHeader.ImageBase);
-    if (delta != 0 && ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size) {
+    SIZE_T delta = (SIZE_T)remoteDllBase - (SIZE_T)ntHeaders->OptionalHeader.ImageBase;
+    IMAGE_DATA_DIRECTORY relocationDirectory = ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+    if (delta != 0 && relocationDirectory.Size) {
+        if (!IsRangeWithin(relocationDirectory.VirtualAddress, relocationDirectory.Size, dllImageSize)) {
+            printf("[!] Invalid relocation directory.\n");
+            VirtualFree(localDllBase, 0, MEM_RELEASE);
+            VirtualFreeEx(hProcess, remoteDllBase, 0, MEM_RELEASE);
+            return nullptr;
+        }
+
         IMAGE_BASE_RELOCATION* reloc = (IMAGE_BASE_RELOCATION*)(localDllBase +
-            ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress);
-        while (reloc->VirtualAddress) {
+            relocationDirectory.VirtualAddress);
+        PBYTE relocationEnd = (PBYTE)reloc + relocationDirectory.Size;
+        while ((PBYTE)reloc + sizeof(IMAGE_BASE_RELOCATION) <= relocationEnd && reloc->VirtualAddress) {
+            if (reloc->SizeOfBlock < sizeof(IMAGE_BASE_RELOCATION) ||
+                (PBYTE)reloc + reloc->SizeOfBlock > relocationEnd) {
+                printf("[!] Invalid relocation block.\n");
+                VirtualFree(localDllBase, 0, MEM_RELEASE);
+                VirtualFreeEx(hProcess, remoteDllBase, 0, MEM_RELEASE);
+                return nullptr;
+            }
+
             DWORD count = (reloc->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
             WORD* relocData = (WORD*)((BYTE*)reloc + sizeof(IMAGE_BASE_RELOCATION));
             for (DWORD i = 0; i < count; i++) {
                 DWORD type = relocData[i] >> 12;
                 DWORD offset = relocData[i] & 0xFFF;
                 if (type == IMAGE_REL_BASED_DIR64) {
+                    if (!IsRangeWithin(reloc->VirtualAddress + offset, sizeof(SIZE_T), dllImageSize)) {
+                        printf("[!] Invalid relocation target.\n");
+                        VirtualFree(localDllBase, 0, MEM_RELEASE);
+                        VirtualFreeEx(hProcess, remoteDllBase, 0, MEM_RELEASE);
+                        return nullptr;
+                    }
                     SIZE_T* patchAddr = (SIZE_T*)(localDllBase + reloc->VirtualAddress + offset);
                     *patchAddr += delta;
                 }
@@ -243,6 +314,7 @@ PVOID ReflectiveDLLInject(HANDLE hProcess, PBYTE lpDllBuffer) {
     if (!WriteProcessMemory(hProcess, remoteDllBase, localDllBase, dllImageSize, NULL)) {
         printf("[!] WriteProcessMemory failed: %d\n", GetLastError());
         VirtualFree(localDllBase, 0, MEM_RELEASE);
+        VirtualFreeEx(hProcess, remoteDllBase, 0, MEM_RELEASE);
         return nullptr;
     }
 
@@ -253,12 +325,27 @@ PVOID ReflectiveDLLInject(HANDLE hProcess, PBYTE lpDllBuffer) {
         SIZE_T sectionVirtualSize = section[i].Misc.VirtualSize;
         
         if (sectionVirtualSize > 0) {
+            if (!IsRangeWithin(section[i].VirtualAddress, sectionVirtualSize, dllImageSize)) {
+                printf("[!] Invalid DLL section virtual range.\n");
+                VirtualFree(localDllBase, 0, MEM_RELEASE);
+                VirtualFreeEx(hProcess, remoteDllBase, 0, MEM_RELEASE);
+                return nullptr;
+            }
+
             if (!VirtualProtectEx(hProcess, (PBYTE)remoteDllBase + section[i].VirtualAddress, sectionVirtualSize, newProtect, &oldProtect)) {
                 printf("[!] VirtualProtectEx failed: %d\n", GetLastError());
                 VirtualFree(localDllBase, 0, MEM_RELEASE);
+                VirtualFreeEx(hProcess, remoteDllBase, 0, MEM_RELEASE);
                 return nullptr;
             }
         }
+    }
+
+    if (!FlushInstructionCache(hProcess, remoteDllBase, dllImageSize)) {
+        printf("[!] FlushInstructionCache failed: %d\n", GetLastError());
+        VirtualFree(localDllBase, 0, MEM_RELEASE);
+        VirtualFreeEx(hProcess, remoteDllBase, 0, MEM_RELEASE);
+        return nullptr;
     }
 
     // Step 9: Free the local DLL base
@@ -266,4 +353,4 @@ PVOID ReflectiveDLLInject(HANDLE hProcess, PBYTE lpDllBuffer) {
 
     // Step 10: Return the base address of the DLL in the remote process
     return remoteDllBase;
-} 
+}

@@ -1,20 +1,25 @@
 # NtdllN DLL CMakeLists.txt
 cmake_minimum_required(VERSION 3.20)
 
+file(GLOB NTDLLN_HOOK_SOURCES CONFIGURE_DEPENDS
+    hooks/*.cpp
+)
+
 # Source files
 set(NTDLLN_SOURCES
     dllmain.cpp
-    ntdlln.cpp
     module_resolver.cpp
     function_resolver.cpp
     logger.cpp
     ../hooknt/memory_utils.cpp
+    ${NTDLLN_HOOK_SOURCES}
 )
 
 set(NTDLLN_HEADERS
     ../include/module_resolver.h
     ../include/function_resolver.h
     ../include/logger.h
+    ../include/nt_hook.h
     ../include/common.h
 )
 
@@ -49,4 +54,4 @@ if(MSVC)
     set_target_properties(ntdlln PROPERTIES
         LINK_FLAGS "/DEBUG"
     )
-endif() 
+endif()
