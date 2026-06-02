@@ -1,16 +1,20 @@
 #include "memory_utils.h"
 
+// Keep byte accesses observable: ntdlln.dll cannot link synthesized CRT helpers.
 int CustomStrCmp(const char* str1, const char* str2) {
-    while (*str1 && (*str1 == *str2)) {
-        str1++;
-        str2++;
+    const volatile unsigned char* left = (const volatile unsigned char*)str1;
+    const volatile unsigned char* right = (const volatile unsigned char*)str2;
+
+    while (*left && (*left == *right)) {
+        left++;
+        right++;
     }
-    return *(unsigned char*)str1 - *(unsigned char*)str2;
+    return *left - *right;
 }
 
 int CustomMemCmp(const void* first, const void* second, size_t count) {
-    const unsigned char* left = (const unsigned char*)first;
-    const unsigned char* right = (const unsigned char*)second;
+    const volatile unsigned char* left = (const volatile unsigned char*)first;
+    const volatile unsigned char* right = (const volatile unsigned char*)second;
     while (count--) {
         if (*left != *right) {
             return *left - *right;
@@ -22,8 +26,8 @@ int CustomMemCmp(const void* first, const void* second, size_t count) {
 }
 
 void* CustomMemCpy(void* dest, const void* src, size_t count) {
-    char* d = (char*)dest;
-    const char* s = (const char*)src;
+    volatile unsigned char* d = (volatile unsigned char*)dest;
+    const volatile unsigned char* s = (const volatile unsigned char*)src;
     
     while (count--) {
         *d++ = *s++;
@@ -33,10 +37,10 @@ void* CustomMemCpy(void* dest, const void* src, size_t count) {
 }
 
 void* CustomMemSet(void* dest, int value, size_t count) {
-    char* d = (char*)dest;
+    volatile unsigned char* d = (volatile unsigned char*)dest;
     
     while (count--) {
-        *d++ = (char)value;
+        *d++ = (unsigned char)value;
     }
     
     return dest;
