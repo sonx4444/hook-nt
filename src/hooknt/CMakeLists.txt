@@ -4,15 +4,22 @@ cmake_minimum_required(VERSION 3.20)
 # Source files
 set(HOOKNT_SOURCES
     main.cpp
+    cli_options.cpp
     hook_registry.cpp
     process_manager.cpp
     hook_manager.cpp
+    trace_renderer.cpp
+    trace_session.cpp
     memory_utils.cpp
 )
 
 set(HOOKNT_HEADERS
     ../include/process_manager.h
     ../include/hook_registry.h
+    ../include/cli_options.h
+    ../include/trace_protocol.h
+    ../include/trace_renderer.h
+    ../include/trace_session.h
     ../include/hook_manager.h
     ../include/memory_utils.h
     ../include/common.h
@@ -20,6 +27,9 @@ set(HOOKNT_HEADERS
 
 # Create executable
 add_executable(hooknt ${HOOKNT_SOURCES} ${HOOKNT_HEADERS})
+target_compile_definitions(hooknt PRIVATE
+    HOOKNT_VERSION="${PROJECT_VERSION}"
+)
 
 # Link libraries
 target_link_libraries(hooknt PRIVATE

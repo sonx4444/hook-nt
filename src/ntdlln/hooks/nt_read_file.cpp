@@ -1,5 +1,5 @@
-#include "logger.h"
 #include "nt_hook.h"
+#include "trace_transport.h"
 
 DEFINE_NT_HOOK(
     NtReadFile,
@@ -12,15 +12,17 @@ DEFINE_NT_HOOK(
     ULONG Length,
     PLARGE_INTEGER ByteOffset,
     PULONG Key) {
-    printfN("\n[*] NtReadFile\n");
-    printfN("  \\FileHandle   : %p\n", FileHandle);
-    printfN("  \\Event        : %p\n", Event);
-    printfN("  \\ApcRoutine   : %p\n", ApcRoutine);
-    printfN("  \\ApcContext   : %p\n", ApcContext);
-    printfN("  \\IoStatusBlock: %p\n", IoStatusBlock);
-    printfN("  \\Length       : %lu\n", Length);
-    printfN("  \\ByteOffset   : %p\n", ByteOffset);
-    printfN("  \\Key          : %p\n", Key);
+    TraceEvent event;
+    InitializeTraceEvent(&event, "NtReadFile");
+    AddTracePointer(&event, "file_handle", FileHandle);
+    AddTracePointer(&event, "event", Event);
+    AddTracePointer(&event, "apc_routine", ApcRoutine);
+    AddTracePointer(&event, "apc_context", ApcContext);
+    AddTracePointer(&event, "io_status_block", IoStatusBlock);
+    AddTracePointer(&event, "buffer_address", Buffer);
+    AddTraceUInt32(&event, "length", Length);
+    AddTracePointer(&event, "byte_offset", ByteOffset);
+    AddTracePointer(&event, "key", Key);
 
     NTSTATUS result = CALL_ORIGINAL(
         NtReadFile,
@@ -35,8 +37,9 @@ DEFINE_NT_HOOK(
         Key);
     if (NT_SUCCESS(result) && IoStatusBlock) {
         size_t bytesRead = IoStatusBlock->Information < Length ? IoStatusBlock->Information : Length;
-        LogBuffer("Buffer", Buffer, bytesRead);
+        AddTraceBufferPreview(&event, "buffer", Buffer, (ULONG)bytesRead);
     }
-    printfN("  ---------------> 0x%08lX\n", result);
+    event.header.status = result;
+    EmitTraceEvent(&event);
     return result;
 }

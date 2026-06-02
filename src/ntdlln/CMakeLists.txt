@@ -7,18 +7,14 @@ file(GLOB NTDLLN_HOOK_SOURCES CONFIGURE_DEPENDS
 
 # Source files
 set(NTDLLN_SOURCES
-    dllmain.cpp
-    module_resolver.cpp
-    function_resolver.cpp
-    logger.cpp
+    trace_transport.cpp
     ../hooknt/memory_utils.cpp
     ${NTDLLN_HOOK_SOURCES}
 )
 
 set(NTDLLN_HEADERS
-    ../include/module_resolver.h
-    ../include/function_resolver.h
-    ../include/logger.h
+    ../include/trace_protocol.h
+    ../include/trace_transport.h
     ../include/nt_hook.h
     ../include/common.h
 )
@@ -26,20 +22,9 @@ set(NTDLLN_HEADERS
 # Create shared library (DLL)
 add_library(ntdlln SHARED ${NTDLLN_SOURCES} ${NTDLLN_HEADERS})
 
-# Link libraries
-target_link_libraries(ntdlln PRIVATE
-    ntdll
-    kernel32
-)
-
 # Include directories
 target_include_directories(ntdlln PRIVATE
     ../include
-)
-
-# Set DLL export definitions
-target_compile_definitions(ntdlln PRIVATE
-    NTDLLN_EXPORTS
 )
 
 # Set output directory
@@ -49,9 +34,18 @@ set_target_properties(ntdlln PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
 )
 
-# Generate PDB files for debugging
+# Enforce the minimal mapper contract.
 if(MSVC)
-    set_target_properties(ntdlln PROPERTIES
-        LINK_FLAGS "/DEBUG"
-    )
+    target_compile_options(ntdlln PRIVATE /GS- /GR-)
+    target_link_options(ntdlln PRIVATE /DEBUG /NOENTRY /NODEFAULTLIB)
 endif()
+
+find_program(POWERSHELL_EXECUTABLE powershell REQUIRED)
+add_custom_command(TARGET ntdlln POST_BUILD
+    COMMAND ${POWERSHELL_EXECUTABLE}
+        -NoProfile
+        -ExecutionPolicy Bypass
+        -File ${CMAKE_SOURCE_DIR}/scripts/validate-ntdlln.ps1
+        $<TARGET_FILE:ntdlln>
+    VERBATIM
+)

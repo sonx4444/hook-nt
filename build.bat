@@ -20,5 +20,16 @@ if %errorlevel% neq 0 (
 
 echo Build completed successfully!
 echo.
+
+echo Running unit tests...
+ctest --test-dir build -C Release --output-on-failure
+
+if %errorlevel% neq 0 (
+    echo Tests failed!
+    exit /b 1
+)
+
+echo Build and tests completed successfully!
+echo.
 echo Executables are in: build\bin\Release\
 echo.

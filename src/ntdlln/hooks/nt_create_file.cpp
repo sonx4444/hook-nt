@@ -1,5 +1,5 @@
-#include "logger.h"
 #include "nt_hook.h"
+#include "trace_transport.h"
 
 DEFINE_NT_HOOK(
     NtCreateFile,
@@ -14,18 +14,19 @@ DEFINE_NT_HOOK(
     ULONG CreateOptions,
     PVOID EaBuffer,
     ULONG EaLength) {
-    printfN("\n[*] NtCreateFile\n");
-    printfN("  \\FileHandle       : %p\n", FileHandle);
-    printfN("  \\DesiredAccess    : %lu\n", DesiredAccess);
-    printfN("  \\ObjectAttributes : %p\n", ObjectAttributes);
-    printfN("  \\IoStatusBlock    : %p\n", IoStatusBlock);
-    printfN("  \\AllocationSize   : %p\n", AllocationSize);
-    printfN("  \\FileAttributes   : %lu\n", FileAttributes);
-    printfN("  \\ShareAccess      : %lu\n", ShareAccess);
-    printfN("  \\CreateDisposition: %lu\n", CreateDisposition);
-    printfN("  \\CreateOptions    : %lu\n", CreateOptions);
-    printfN("  \\EaBuffer         : %p\n", EaBuffer);
-    printfN("  \\EaLength         : %lu\n", EaLength);
+    TraceEvent event;
+    InitializeTraceEvent(&event, "NtCreateFile");
+    AddTracePointer(&event, "file_handle", FileHandle);
+    AddTraceUInt32(&event, "desired_access", DesiredAccess);
+    AddTracePointer(&event, "object_attributes", ObjectAttributes);
+    AddTracePointer(&event, "io_status_block", IoStatusBlock);
+    AddTracePointer(&event, "allocation_size", AllocationSize);
+    AddTraceUInt32(&event, "file_attributes", FileAttributes);
+    AddTraceUInt32(&event, "share_access", ShareAccess);
+    AddTraceUInt32(&event, "create_disposition", CreateDisposition);
+    AddTraceUInt32(&event, "create_options", CreateOptions);
+    AddTracePointer(&event, "ea_buffer", EaBuffer);
+    AddTraceUInt32(&event, "ea_length", EaLength);
 
     NTSTATUS result = CALL_ORIGINAL(
         NtCreateFile,
@@ -40,6 +41,7 @@ DEFINE_NT_HOOK(
         CreateOptions,
         EaBuffer,
         EaLength);
-    printfN("  ---------------> 0x%08lX\n", result);
+    event.header.status = result;
+    EmitTraceEvent(&event);
     return result;
 }

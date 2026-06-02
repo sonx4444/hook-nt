@@ -1,5 +1,5 @@
-#include "logger.h"
 #include "nt_hook.h"
+#include "trace_transport.h"
 
 DEFINE_NT_HOOK(
     NtWriteFile,
@@ -12,16 +12,18 @@ DEFINE_NT_HOOK(
     ULONG Length,
     PLARGE_INTEGER ByteOffset,
     PULONG Key) {
-    printfN("\n[*] NtWriteFile\n");
-    printfN("  \\FileHandle   : %p\n", FileHandle);
-    printfN("  \\Event        : %p\n", Event);
-    printfN("  \\ApcRoutine   : %p\n", ApcRoutine);
-    printfN("  \\ApcContext   : %p\n", ApcContext);
-    printfN("  \\IoStatusBlock: %p\n", IoStatusBlock);
-    LogBuffer("Buffer", Buffer, Length);
-    printfN("  \\Length       : %lu\n", Length);
-    printfN("  \\ByteOffset   : %p\n", ByteOffset);
-    printfN("  \\Key          : %p\n", Key);
+    TraceEvent event;
+    InitializeTraceEvent(&event, "NtWriteFile");
+    AddTracePointer(&event, "file_handle", FileHandle);
+    AddTracePointer(&event, "event", Event);
+    AddTracePointer(&event, "apc_routine", ApcRoutine);
+    AddTracePointer(&event, "apc_context", ApcContext);
+    AddTracePointer(&event, "io_status_block", IoStatusBlock);
+    AddTracePointer(&event, "buffer_address", Buffer);
+    AddTraceUInt32(&event, "length", Length);
+    AddTracePointer(&event, "byte_offset", ByteOffset);
+    AddTracePointer(&event, "key", Key);
+    AddTraceBufferPreview(&event, "buffer", Buffer, Length);
 
     NTSTATUS result = CALL_ORIGINAL(
         NtWriteFile,
@@ -34,6 +36,7 @@ DEFINE_NT_HOOK(
         Length,
         ByteOffset,
         Key);
-    printfN("  ---------------> 0x%08lX\n", result);
+    event.header.status = result;
+    EmitTraceEvent(&event);
     return result;
 }

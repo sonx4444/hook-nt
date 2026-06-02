@@ -17,6 +17,8 @@ jobs:
         run: cmake -S . -B build -A x64
       - name: Build
         run: cmake --build build --config Release
+      - name: Validate injected DLL contract
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\validate-ntdlln.ps1 .\build\bin\Release\ntdlln.dll
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
       - name: Runtime smoke test
@@ -28,6 +30,9 @@ jobs:
           Copy-Item build\bin\Release\hooknt.exe dist\hooknt-windows-x64
           Copy-Item build\bin\Release\ntdlln.dll dist\hooknt-windows-x64
           Copy-Item build\bin\Release\test_file_ops.exe dist\hooknt-windows-x64
+          Copy-Item build\bin\Release\test_multithread_file_ops.exe dist\hooknt-windows-x64
+          Copy-Item README.md dist\hooknt-windows-x64
+          Copy-Item LICENSE dist\hooknt-windows-x64
           Compress-Archive -Path dist\hooknt-windows-x64 -DestinationPath dist\hooknt-windows-x64.zip
           (Get-FileHash dist\hooknt-windows-x64.zip -Algorithm SHA256).Hash + "  hooknt-windows-x64.zip" | Out-File dist\SHA256SUMS.txt -Encoding ascii
       - name: Publish release

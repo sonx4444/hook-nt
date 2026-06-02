@@ -13,6 +13,8 @@ jobs:
         run: cmake -S . -B build -A x64
       - name: Build
         run: cmake --build build --config Release
+      - name: Validate injected DLL contract
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\validate-ntdlln.ps1 .\build\bin\Release\ntdlln.dll
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
       - name: Runtime smoke test
@@ -25,3 +27,4 @@ jobs:
             build/bin/Release/hooknt.exe
             build/bin/Release/ntdlln.dll
             build/bin/Release/test_file_ops.exe
+            build/bin/Release/test_multithread_file_ops.exe

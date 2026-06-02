@@ -22,5 +22,22 @@ int main() {
         return 1;
     }
 
+    BYTE originalBytes[32];
+    BYTE expectedBytes[32];
+    CustomMemSet(originalBytes, 0x90, sizeof(originalBytes));
+    CustomMemCpy(expectedBytes, originalBytes, sizeof(originalBytes));
+
+    RemoteTrampoline trampoline;
+    if (!CreateBypassTrampoline(GetCurrentProcess(), originalBytes, &trampoline)) {
+        printf("Failed to create bypass trampoline\n");
+        return 1;
+    }
+    if (CustomMemCmp(originalBytes, expectedBytes, sizeof(originalBytes)) != 0) {
+        printf("Bypass trampoline modified the original entry bytes\n");
+        VirtualFree(trampoline.address, 0, MEM_RELEASE);
+        return 1;
+    }
+    VirtualFree(trampoline.address, 0, MEM_RELEASE);
+
     return 0;
 }

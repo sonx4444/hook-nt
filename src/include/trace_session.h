@@ -1,0 +1,48 @@
+#pragma once
+
+#include "common.h"
+#include "trace_protocol.h"
+#include <atomic>
+#include <fstream>
+#include <string>
+#include <thread>
+
+enum class TraceOutputFormat {
+    Text,
+    Jsonl,
+};
+
+struct TraceOutputOptions {
+    TraceOutputFormat format;
+    std::wstring outputPath;
+    bool quiet;
+};
+
+class TraceSession {
+public:
+    TraceSession();
+    ~TraceSession();
+
+    bool Initialize(
+        HANDLE targetProcess,
+        PVOID ntdllBase,
+        PVOID ntdllNBase,
+        const TraceOutputOptions& outputOptions);
+    void Stop();
+
+private:
+    bool OpenOutput(const TraceOutputOptions& outputOptions);
+    bool CreatePipe(HANDLE targetProcess);
+    bool ConfigureRemoteTransport(HANDLE targetProcess, PVOID ntdllBase, PVOID ntdllNBase);
+    bool WriteRemoteExport(HANDLE targetProcess, PVOID ntdllNBase, const char* exportName, const void* value, SIZE_T size);
+    void ReaderLoop();
+
+    HANDLE serverPipe_;
+    HANDLE remotePipeHandle_;
+    std::atomic<bool> stopRequested_;
+    std::thread readerThread_;
+    std::ofstream outputFile_;
+    TraceOutputFormat outputFormat_;
+    bool quiet_;
+    uint32_t highestDroppedCount_;
+};

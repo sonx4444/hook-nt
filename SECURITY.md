@@ -2,6 +2,8 @@
 
 HookNt modifies process memory and is intended for authorized educational and research use on Windows systems you control.
 
+Attaching to an existing PID briefly suspends the target and writes executable code into its address space. Do not attach to production workloads, security-critical processes, or processes you are not authorized to inspect. Elevated targets may require running HookNt with elevated rights.
+
 ## Reporting A Vulnerability
 
 Do not include sensitive exploit details in a public issue. Report vulnerabilities through GitHub private vulnerability reporting when available, or contact the repository owner privately.

@@ -1,8 +1,10 @@
+#include "cli_options.h"
 #include "common.h"
 #include "hook_manager.h"
 #include "hook_registry.h"
 #include "process_manager.h"
-#include <iostream>
+#include "trace_session.h"
+#include <stdio.h>
 #include <string>
 #include <vector>
 
@@ -19,123 +21,232 @@ static std::wstring GetSiblingPath(const wchar_t* fileName) {
 }
 
 static int FailSuspendedProcess(HANDLE hProcess, HANDLE hThread, const char* message) {
-    printf("[!] %s\n", message);
+    fprintf(stderr, "[!] %s\n", message);
     TerminateProcess(hProcess, 1);
     CloseHandle(hThread);
     CloseHandle(hProcess);
     return 1;
 }
 
-int main(int argc, char* argv[]) {
+typedef NTSTATUS(NTAPI* NtProcessControlProc)(HANDLE ProcessHandle);
+
+static bool SetProcessSuspended(HANDLE process, const char* functionName) {
+    NtProcessControlProc controlProcess = (NtProcessControlProc)GetProcAddress(
+        GetModuleHandleW(L"ntdll.dll"),
+        functionName);
+    if (!controlProcess) {
+        fprintf(stderr, "[!] %s is unavailable\n", functionName);
+        return false;
+    }
+
+    NTSTATUS status = controlProcess(process);
+    if (!NT_SUCCESS(status)) {
+        fprintf(stderr, "[!] %s failed (0x%08X)\n", functionName, (uint32_t)status);
+        return false;
+    }
+    return true;
+}
+
+static bool RollbackHooks(HANDLE process, std::vector<InstalledHook>* installedHooks) {
+    bool restored = true;
+    for (auto hook = installedHooks->rbegin(); hook != installedHooks->rend(); ++hook) {
+        if (!UnhookFunction(process, *hook)) {
+            restored = false;
+        }
+    }
+    installedHooks->clear();
+    return restored;
+}
+
+static bool PrepareTraceTarget(
+    HANDLE process,
+    const std::wstring& dllPath,
+    const CommandLineOptions& options,
+    TraceSession* traceSession,
+    std::vector<InstalledHook>* installedHooks) {
+    PVOID ntdllBase = FindNtdllBase(process);
+    if (!ntdllBase) {
+        fprintf(stderr, "[!] ntdll.dll not found\n");
+        return false;
+    }
+    fprintf(stderr, "[+] Found ntdll.dll at 0x%p\n", ntdllBase);
+
+    fprintf(stderr, "[+] Injecting DLL\n");
+    PVOID ntdllNBase = InjectDll(process, dllPath.c_str());
+    if (!ntdllNBase) {
+        fprintf(stderr, "[!] DLL injection failed\n");
+        return false;
+    }
+    fprintf(stderr, "[+] DLL injected at 0x%p\n", ntdllNBase);
+
+    if (!traceSession->Initialize(process, ntdllBase, ntdllNBase, options.output)) {
+        fprintf(stderr, "[!] Trace transport setup failed\n");
+        return false;
+    }
+
+    for (const std::string& hookName : options.hooks) {
+        InstalledHook hook;
+        if (!HookFunction(process, ntdllBase, ntdllNBase, hookName.c_str(), &hook)) {
+            fprintf(stderr, "[!] Failed to hook %s\n", hookName.c_str());
+            if (!RollbackHooks(process, installedHooks)) {
+                fprintf(stderr, "[!] Failed to roll back installed hooks\n");
+            }
+            return false;
+        }
+        installedHooks->push_back(hook);
+    }
+    fprintf(stderr, "[+] All hooks installed successfully\n");
+    return true;
+}
+
+int wmain(int argc, wchar_t* argv[]) {
+    const std::vector<std::string> noHooks;
+    CommandLineOptions options = ParseCommandLine(argc, argv, noHooks);
+    if (options.mode == CommandMode::Help) {
+        PrintUsage();
+        return 0;
+    }
+    if (options.mode == CommandMode::Version) {
+        printf("hooknt %s\n", HOOKNT_VERSION);
+        return 0;
+    }
+
     std::wstring dllPath = GetSiblingPath(L"ntdlln.dll");
     std::vector<std::string> availableHooks = DiscoverHooks(dllPath.c_str());
-
-    if (argc == 2 && strcmp(argv[1], "--list-hooks") == 0) {
+    options = ParseCommandLine(argc, argv, availableHooks);
+    if (options.mode == CommandMode::ListHooks) {
         if (availableHooks.empty()) {
-            printf("[!] No hooks discovered in ntdlln.dll\n");
+            fprintf(stderr, "[!] No hooks discovered in ntdlln.dll\n");
             return 1;
         }
         PrintSupportedHooks(availableHooks);
         return 0;
     }
-
-    if (argc < 3) {
-        printf("Usage: hooknt.exe <target program> <list of NT functions to hook>\n");
-        printf("       hooknt.exe --list-hooks\n");
-        printf("Example: hooknt.exe notepad.exe NtCreateFile NtReadFile NtWriteFile\n");
+    if (options.mode == CommandMode::Error) {
+        fprintf(stderr, "[!] %s\n", options.error.c_str());
+        PrintUsage();
         return 1;
     }
 
-    if (availableHooks.empty()) {
-        printf("[!] No hooks discovered in ntdlln.dll\n");
-        return 1;
-    }
-
-    // Extract the target program and NT functions from command-line arguments
-    std::string targetProgram = argv[1];
-    std::wstring targetProgramW(targetProgram.begin(), targetProgram.end());
-
-    std::vector<std::string> ntFunctionsToHook;
-    for (int i = 2; i < argc; ++i) {
-        if (!IsSupportedHook(availableHooks, argv[i])) {
-            printf("[!] Unsupported hook: %s\n", argv[i]);
-            printf("[!] Supported hooks:\n");
-            PrintSupportedHooks(availableHooks);
+    if (options.mode == CommandMode::Attach) {
+        if (options.targetProcessId == GetCurrentProcessId()) {
+            fprintf(stderr, "[!] Refusing to attach hooknt.exe to itself\n");
             return 1;
         }
-        ntFunctionsToHook.push_back(argv[i]);
-    }
 
-    printf("[+] HookNt - NT API Function Hooker\n");
-    printf("[+] Target: %s\n", targetProgram.c_str());
-    printf("[+] Functions to hook: ");
-    for (const auto& func : ntFunctionsToHook) {
-        printf("%s ", func.c_str());
-    }
-    printf("\n\n");
-
-    // Create a new process, suspend it and get its PID
-    STARTUPINFOW si = { sizeof(si) };
-    PROCESS_INFORMATION pi;
-    
-    if (!CreateProcessW(
-        targetProgramW.c_str(),
-        NULL, NULL, NULL, TRUE, CREATE_SUSPENDED, NULL, NULL, &si, &pi)) {
-        printf("[!] CreateProcess failed (%d)\n", GetLastError());
-        return 1;
-    }
-    
-    DWORD pid = pi.dwProcessId;
-    HANDLE hProcess = pi.hProcess;
-    HANDLE hThread = pi.hThread;
-    printf("[+] Process created, PID: %d\n", pid);
-
-    // Find ntdll.dll in the target process
-    PVOID ntdllBase = FindNtdllBase(hProcess);
-    if (!ntdllBase) {
-        return FailSuspendedProcess(hProcess, hThread, "ntdll.dll not found");
-    }
-    printf("[+] Found ntdll.dll at 0x%p\n", ntdllBase);
-
-    // Inject our DLL
-    printf("[+] Injecting DLL\n");
-    PVOID ntdllNBase = InjectDll(hProcess, dllPath.c_str());
-    if (!ntdllNBase) {
-        return FailSuspendedProcess(hProcess, hThread, "DLL injection failed");
-    }
-    printf("[+] DLL injected at 0x%p\n", ntdllNBase);
-
-    // Hook each function
-    bool allHooksSuccessful = true;
-    for (const auto& functionName : ntFunctionsToHook) {
-        if (!HookFunction(hProcess, ntdllBase, ntdllNBase, functionName.c_str())) {
-            printf("[!] Failed to hook %s\n", functionName.c_str());
-            allHooksSuccessful = false;
+        fprintf(stderr, "[+] HookNt - NT API Function Hooker\n");
+        fprintf(stderr, "[+] Attaching to PID: %lu\n", options.targetProcessId);
+        fprintf(stderr, "[+] Functions to hook: ");
+        for (const std::string& hook : options.hooks) {
+            fprintf(stderr, "%s ", hook.c_str());
         }
+        fprintf(stderr, "\n\n");
+
+        DWORD access = PROCESS_QUERY_INFORMATION |
+            PROCESS_VM_OPERATION |
+            PROCESS_VM_READ |
+            PROCESS_VM_WRITE |
+            PROCESS_DUP_HANDLE |
+            PROCESS_SUSPEND_RESUME |
+            SYNCHRONIZE;
+        HANDLE process = OpenProcess(access, FALSE, options.targetProcessId);
+        if (!process) {
+            fprintf(stderr, "[!] OpenProcess failed (%lu)\n", GetLastError());
+            return 1;
+        }
+        if (!SetProcessSuspended(process, "NtSuspendProcess")) {
+            CloseHandle(process);
+            return 1;
+        }
+        fprintf(stderr, "[+] Target suspended for hook installation\n");
+
+        TraceSession traceSession;
+        std::vector<InstalledHook> installedHooks;
+        if (!PrepareTraceTarget(process, dllPath, options, &traceSession, &installedHooks)) {
+            traceSession.Stop();
+            if (!SetProcessSuspended(process, "NtResumeProcess")) {
+                fprintf(stderr, "[!] Target remains suspended; resume it manually\n");
+            }
+            CloseHandle(process);
+            return 1;
+        }
+        if (!SetProcessSuspended(process, "NtResumeProcess")) {
+            if (!RollbackHooks(process, &installedHooks)) {
+                fprintf(stderr, "[!] Failed to roll back installed hooks\n");
+            }
+            traceSession.Stop();
+            fprintf(stderr, "[!] Target remains suspended; resume it manually\n");
+            CloseHandle(process);
+            return 1;
+        }
+        fprintf(stderr, "[+] Target resumed; logging until process exit...\n");
+
+        WaitForSingleObject(process, INFINITE);
+        traceSession.Stop();
+
+        DWORD exitCode = 0;
+        if (!GetExitCodeProcess(process, &exitCode)) {
+            fprintf(stderr, "[!] GetExitCodeProcess failed (%lu)\n", GetLastError());
+            CloseHandle(process);
+            return 1;
+        }
+        CloseHandle(process);
+        fprintf(stderr, "[+] Target exited with code %lu\n", exitCode);
+        return 0;
     }
 
-    if (!allHooksSuccessful) {
-        return FailSuspendedProcess(hProcess, hThread, "Hook installation failed");
+    fprintf(stderr, "[+] HookNt - NT API Function Hooker\n");
+    fwprintf(stderr, L"[+] Target: %ls\n", options.targetArguments[0].c_str());
+    fprintf(stderr, "[+] Functions to hook: ");
+    for (const std::string& hook : options.hooks) {
+        fprintf(stderr, "%s ", hook.c_str());
     }
-    printf("[+] All hooks installed successfully\n");
+    fprintf(stderr, "\n\n");
 
-    printf("[+] Setup done, resuming process...\n");
-    
-    // Resume the main thread
-    if (ResumeThread(hThread) == (DWORD)-1) {
-        return FailSuspendedProcess(hProcess, hThread, "ResumeThread failed");
-    }
-    CloseHandle(hThread);
+    std::wstring commandLine = BuildWindowsCommandLine(options.targetArguments);
+    std::vector<WCHAR> commandLineBuffer(commandLine.begin(), commandLine.end());
+    commandLineBuffer.push_back(L'\0');
 
-    WaitForSingleObject(hProcess, INFINITE);
-    DWORD exitCode = 1;
-    if (!GetExitCodeProcess(hProcess, &exitCode)) {
-        printf("[!] GetExitCodeProcess failed (%d)\n", GetLastError());
-        CloseHandle(hProcess);
+    STARTUPINFOW startupInfo = {sizeof(startupInfo)};
+    PROCESS_INFORMATION processInfo;
+    if (!CreateProcessW(
+            options.targetArguments[0].c_str(),
+            commandLineBuffer.data(),
+            nullptr,
+            nullptr,
+            TRUE,
+            CREATE_SUSPENDED,
+            nullptr,
+            nullptr,
+            &startupInfo,
+            &processInfo)) {
+        fprintf(stderr, "[!] CreateProcessW failed (%lu)\n", GetLastError());
         return 1;
     }
-    CloseHandle(hProcess);
-    printf("[+] Target exited with code %lu\n", exitCode);
-    
+    fprintf(stderr, "[+] Process created, PID: %lu\n", processInfo.dwProcessId);
+
+    TraceSession traceSession;
+    std::vector<InstalledHook> installedHooks;
+    if (!PrepareTraceTarget(processInfo.hProcess, dllPath, options, &traceSession, &installedHooks)) {
+        return FailSuspendedProcess(processInfo.hProcess, processInfo.hThread, "Trace setup failed");
+    }
+    fprintf(stderr, "[+] Setup done, resuming process...\n");
+
+    if (ResumeThread(processInfo.hThread) == (DWORD)-1) {
+        return FailSuspendedProcess(processInfo.hProcess, processInfo.hThread, "ResumeThread failed");
+    }
+    CloseHandle(processInfo.hThread);
+
+    WaitForSingleObject(processInfo.hProcess, INFINITE);
+    traceSession.Stop();
+
+    DWORD exitCode = 1;
+    if (!GetExitCodeProcess(processInfo.hProcess, &exitCode)) {
+        fprintf(stderr, "[!] GetExitCodeProcess failed (%lu)\n", GetLastError());
+        CloseHandle(processInfo.hProcess);
+        return 1;
+    }
+    CloseHandle(processInfo.hProcess);
+    fprintf(stderr, "[+] Target exited with code %lu\n", exitCode);
     return exitCode == 0 ? 0 : 1;
 }

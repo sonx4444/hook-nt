@@ -7,10 +7,26 @@
 - Bounded logging for `NtCreateFile`, `NtReadFile`, and `NtWriteFile`
 - Conservative trampoline validation
 
+## v0.2.0: Trace Pipeline
+
+- Import-free injected DLL contract with build-time validation
+- Nonblocking named-pipe event transport with drop counting
+- Unpatched `NtWriteFile` and `NtReadVirtualMemory` transport bypass trampolines
+- Self-describing binary TLV events for hook-local schemas
+- Hook-entry timestamps and originating thread IDs
+- Readable terminal rendering with optional text or JSONL file tee and `--quiet`
+- Structured `run --hook ... -- <program> [args...]` CLI and `--hook all`
+- Unicode target paths and forwarded target arguments
+
+## v0.3.0: Attach Workflow
+
+- Short CLI aliases and `--version`
+- Attach to an existing PID with a suspended transactional setup window
+- Real multithreaded launch and attach smoke coverage
+
 ## Next
 
-- Attach to an existing PID
-- JSON and file output modes
+- Graceful detach and remote instrumentation cleanup for attached processes
 - Path and API filters
 - Metadata-rich hook registry for categories and default filters
 - Additional NT APIs

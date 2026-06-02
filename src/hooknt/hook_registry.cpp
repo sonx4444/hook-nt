@@ -15,7 +15,7 @@ std::vector<std::string> DiscoverHooks(const wchar_t* dllPath) {
     std::vector<std::string> hooks;
     HMODULE module = LoadLibraryExW(dllPath, nullptr, DONT_RESOLVE_DLL_REFERENCES);
     if (!module) {
-        printf("[!] Failed to inspect hook DLL (%lu)\n", GetLastError());
+        fprintf(stderr, "[!] Failed to inspect hook DLL (%lu)\n", GetLastError());
         return hooks;
     }
 
