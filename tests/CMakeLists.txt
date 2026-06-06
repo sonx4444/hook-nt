@@ -40,7 +40,6 @@ target_include_directories(test_patch_size PRIVATE
 )
 target_link_libraries(test_patch_size PRIVATE
     distorm
-    psapi
     ntdll
 )
 set_target_properties(test_patch_size PROPERTIES

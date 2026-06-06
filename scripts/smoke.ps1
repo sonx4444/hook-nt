@@ -59,7 +59,7 @@ try {
     cmd /d /s /c '"hooknt.exe" run --hook all --quiet --format jsonl --output "smoke-quiet-output.jsonl" -- ".\test_file_ops.exe" > "smoke-quiet-target-output.txt" 2>&1'
     if ($LASTEXITCODE -ne 0) { throw "Quiet JSONL smoke trace failed" }
 
-    cmd /d /s /c '"hooknt.exe" run --hook all --quiet --format jsonl --output "smoke-multithread-output.jsonl" -- ".\test_multithread_file_ops.exe" > "smoke-multithread-target-output.txt" 2>&1'
+    cmd /d /s /c '"hooknt.exe" run --hook all --quiet --format jsonl --output "smoke-multithread-output.jsonl" -- ".\test_multithread_file_ops.exe" --iterations 128 > "smoke-multithread-target-output.txt" 2>&1'
     if ($LASTEXITCODE -ne 0) { throw "Multithreaded JSONL smoke trace failed" }
 
     $attachTarget = Start-Process -FilePath ".\test_multithread_file_ops.exe" -ArgumentList "--delay-ms", "2000" -PassThru -WindowStyle Hidden
@@ -136,6 +136,13 @@ $multithreadFileEvents = @($multithreadJsonEvents | Where-Object {
 $multithreadIds = @($multithreadFileEvents.thread_id | Sort-Object -Unique)
 if ($multithreadIds.Count -lt 2) {
     throw "Multithreaded JSONL output did not contain multiple worker thread IDs"
+}
+$multithreadDropped = ($multithreadFileEvents | Measure-Object -Property dropped_before -Maximum).Maximum
+if ($multithreadDropped -ne 0) {
+    throw "Queued multithreaded trace reported $multithreadDropped dropped events"
+}
+if ($multithreadFileEvents.Count -lt (8 * 128 * 3)) {
+    throw "Queued multithreaded trace did not capture all expected file operations"
 }
 if (-not ($multithreadFileEvents.api -contains "NtCreateFile") -or
     -not ($multithreadFileEvents.api -contains "NtWriteFile") -or

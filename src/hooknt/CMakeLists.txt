@@ -33,7 +33,6 @@ target_compile_definitions(hooknt PRIVATE
 
 # Link libraries
 target_link_libraries(hooknt PRIVATE
-    psapi
     ntdll
 )
 

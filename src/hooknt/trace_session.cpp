@@ -5,10 +5,14 @@
 #include <stdio.h>
 #include <iostream>
 
+static const size_t TRACE_PIPE_EVENT_CAPACITY = 1024;
+static const size_t TRACE_EVENT_QUEUE_CAPACITY = 4096;
+
 TraceSession::TraceSession()
     : serverPipe_(INVALID_HANDLE_VALUE),
       remotePipeHandle_(nullptr),
-      stopRequested_(false),
+      stopEvent_(CreateEventW(nullptr, TRUE, FALSE, nullptr)),
+      readerFinished_(false),
       outputFormat_(TraceOutputFormat::Text),
       quiet_(false),
       highestDroppedCount_(0) {
@@ -16,6 +20,10 @@ TraceSession::TraceSession()
 
 TraceSession::~TraceSession() {
     Stop();
+    if (stopEvent_) {
+        CloseHandle(stopEvent_);
+        stopEvent_ = nullptr;
+    }
 }
 
 bool TraceSession::OpenOutput(const TraceOutputOptions& outputOptions) {
@@ -51,11 +59,11 @@ bool TraceSession::CreatePipe(HANDLE targetProcess) {
 
     serverPipe_ = CreateNamedPipeW(
         pipeName,
-        PIPE_ACCESS_INBOUND,
-        PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_NOWAIT,
+        PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED,
+        PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
         1,
         0,
-        sizeof(TraceEvent) * 64,
+        sizeof(TraceEvent) * TRACE_PIPE_EVENT_CAPACITY,
         0,
         nullptr);
     if (serverPipe_ == INVALID_HANDLE_VALUE) {
@@ -148,8 +156,18 @@ bool TraceSession::ConfigureRemoteTransport(HANDLE targetProcess, PVOID ntdllBas
                "TransportNtReadVirtualMemory",
                &readMemoryBypass.address,
                sizeof(readMemoryBypass.address)) &&
-        WriteRemoteExport(targetProcess, ntdllNBase, "TransportSequence", &zero, sizeof(zero)) &&
-        WriteRemoteExport(targetProcess, ntdllNBase, "TransportDroppedEvents", &zero, sizeof(zero));
+        WriteRemoteExport(
+               targetProcess,
+               ntdllNBase,
+               "TransportSequence",
+               &zero,
+               sizeof(zero)) &&
+        WriteRemoteExport(
+               targetProcess,
+               ntdllNBase,
+               "TransportDroppedEvents",
+               &zero,
+               sizeof(zero));
 }
 
 bool TraceSession::Initialize(
@@ -157,6 +175,10 @@ bool TraceSession::Initialize(
     PVOID ntdllBase,
     PVOID ntdllNBase,
     const TraceOutputOptions& outputOptions) {
+    if (!stopEvent_) {
+        fprintf(stderr, "[!] Failed to create trace stop event\n");
+        return false;
+    }
     if (!OpenOutput(outputOptions)) {
         return false;
     }
@@ -169,15 +191,23 @@ bool TraceSession::Initialize(
         return false;
     }
 
-    stopRequested_ = false;
+    ResetEvent(stopEvent_);
+    readerFinished_ = false;
+    highestDroppedCount_ = 0;
+    writerThread_ = std::thread(&TraceSession::WriterLoop, this);
     readerThread_ = std::thread(&TraceSession::ReaderLoop, this);
     return true;
 }
 
 void TraceSession::Stop() {
-    stopRequested_ = true;
+    if (stopEvent_) {
+        SetEvent(stopEvent_);
+    }
     if (readerThread_.joinable()) {
         readerThread_.join();
+    }
+    if (writerThread_.joinable()) {
+        writerThread_.join();
     }
     if (serverPipe_ != INVALID_HANDLE_VALUE) {
         CloseHandle(serverPipe_);
@@ -189,43 +219,125 @@ void TraceSession::Stop() {
 }
 
 void TraceSession::ReaderLoop() {
+    HANDLE readEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!readEvent) {
+        fprintf(stderr, "[!] Failed to create trace read event (%lu)\n", GetLastError());
+        {
+            std::lock_guard<std::mutex> lock(queueMutex_);
+            readerFinished_ = true;
+        }
+        queueNotEmpty_.notify_all();
+        return;
+    }
+
     while (true) {
         TraceEvent event;
         DWORD bytesRead = 0;
-        if (ReadFile(serverPipe_, &event, sizeof(event), &bytesRead, nullptr)) {
+        OVERLAPPED overlapped = {};
+        overlapped.hEvent = readEvent;
+        ResetEvent(readEvent);
+
+        bool readCompleted = ReadFile(
+            serverPipe_,
+            &event,
+            sizeof(event),
+            &bytesRead,
+            &overlapped) != FALSE;
+        if (!readCompleted) {
+            DWORD error = GetLastError();
+            if (error == ERROR_IO_PENDING) {
+                HANDLE waitHandles[] = {readEvent, stopEvent_};
+                DWORD waitResult = WaitForMultipleObjects(ARRAYSIZE(waitHandles), waitHandles, FALSE, INFINITE);
+                if (waitResult == WAIT_OBJECT_0) {
+                    readCompleted = GetOverlappedResult(
+                        serverPipe_,
+                        &overlapped,
+                        &bytesRead,
+                        FALSE) != FALSE;
+                    if (!readCompleted) {
+                        error = GetLastError();
+                    }
+                } else if (waitResult == WAIT_OBJECT_0 + 1) {
+                    CancelIoEx(serverPipe_, &overlapped);
+                    WaitForSingleObject(readEvent, INFINITE);
+                    GetOverlappedResult(serverPipe_, &overlapped, &bytesRead, FALSE);
+                    break;
+                } else {
+                    fprintf(stderr, "[!] Trace pipe wait failed (%lu)\n", GetLastError());
+                    CancelIoEx(serverPipe_, &overlapped);
+                    WaitForSingleObject(readEvent, INFINITE);
+                    GetOverlappedResult(serverPipe_, &overlapped, &bytesRead, FALSE);
+                    break;
+                }
+            }
+
+            if (!readCompleted) {
+                if (error == ERROR_BROKEN_PIPE) {
+                    break;
+                }
+                fprintf(stderr, "[!] Trace pipe read failed (%lu)\n", error);
+                break;
+            }
+        }
+
+        if (readCompleted) {
             if (!IsValidTraceEvent(event, bytesRead)) {
                 fprintf(stderr, "[!] Ignored malformed trace event\n");
                 continue;
             }
-            if (event.header.droppedBefore > highestDroppedCount_) {
-                highestDroppedCount_ = event.header.droppedBefore;
-                fprintf(stderr, "[!] Trace events dropped: %u\n", highestDroppedCount_);
+
+            {
+                std::unique_lock<std::mutex> lock(queueMutex_);
+                queueNotFull_.wait(lock, [this]() {
+                    return eventQueue_.size() < TRACE_EVENT_QUEUE_CAPACITY;
+                });
+                eventQueue_.push_back(event);
             }
-            if (!quiet_) {
-                RenderTraceEventText(std::cout, event);
-            }
-            if (outputFile_.is_open()) {
-                if (outputFormat_ == TraceOutputFormat::Jsonl) {
-                    RenderTraceEventJsonl(outputFile_, event);
-                } else {
-                    RenderTraceEventText(outputFile_, event);
-                }
-            }
+            queueNotEmpty_.notify_one();
             continue;
         }
+    }
 
-        DWORD error = GetLastError();
-        if (error == ERROR_NO_DATA) {
-            if (stopRequested_) {
+    CloseHandle(readEvent);
+    {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        readerFinished_ = true;
+    }
+    queueNotEmpty_.notify_all();
+}
+
+void TraceSession::WriterLoop() {
+    while (true) {
+        TraceEvent event;
+        {
+            std::unique_lock<std::mutex> lock(queueMutex_);
+            queueNotEmpty_.wait(lock, [this]() {
+                return !eventQueue_.empty() || readerFinished_;
+            });
+            if (eventQueue_.empty()) {
                 break;
             }
-            Sleep(1);
-            continue;
+            event = eventQueue_.front();
+            eventQueue_.pop_front();
         }
-        if (error == ERROR_BROKEN_PIPE) {
-            break;
+        queueNotFull_.notify_one();
+        RenderEvent(event);
+    }
+}
+
+void TraceSession::RenderEvent(const TraceEvent& event) {
+    if (event.header.droppedBefore > highestDroppedCount_) {
+        highestDroppedCount_ = event.header.droppedBefore;
+        fprintf(stderr, "[!] Trace events dropped: %u\n", highestDroppedCount_);
+    }
+    if (!quiet_) {
+        RenderTraceEventText(std::cout, event);
+    }
+    if (outputFile_.is_open()) {
+        if (outputFormat_ == TraceOutputFormat::Jsonl) {
+            RenderTraceEventJsonl(outputFile_, event);
+        } else {
+            RenderTraceEventText(outputFile_, event);
         }
-        fprintf(stderr, "[!] Trace pipe read failed (%lu)\n", error);
-        break;
     }
 }

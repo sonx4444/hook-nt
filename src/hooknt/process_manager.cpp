@@ -1,6 +1,5 @@
 #include "process_manager.h"
 #include "memory_utils.h"
-#include <psapi.h>
 #include <stdio.h>
 
 static bool IsRangeWithin(SIZE_T offset, SIZE_T length, SIZE_T bufferSize) {
@@ -9,48 +8,6 @@ static bool IsRangeWithin(SIZE_T offset, SIZE_T length, SIZE_T bufferSize) {
 
 static DWORD GetMemoryProtection(DWORD characteristics);
 static PVOID ReflectiveDLLInject(HANDLE hProcess, PBYTE lpDllBuffer, SIZE_T dllFileSize);
-
-typedef enum _MEMORY_INFORMATION_CLASS {
-    MemoryBasicInformation
-} MEMORY_INFORMATION_CLASS;
-
-typedef NTSTATUS(NTAPI* NtQueryVirtualMemoryProc)(
-    HANDLE ProcessHandle,
-    PVOID BaseAddress,
-    MEMORY_INFORMATION_CLASS MemoryInformationClass,
-    PVOID MemoryInformation,
-    SIZE_T MemoryInformationLength,
-    PSIZE_T ReturnLength);
-
-PVOID FindNtdllBase(HANDLE hProcess) {
-    MEMORY_BASIC_INFORMATION mbi;
-    PVOID address = 0;
-    SIZE_T returnLength;
-    WCHAR name[MAX_PATH];
-
-    // Get the NtQueryVirtualMemory function address
-    NtQueryVirtualMemoryProc NtQueryVirtualMemory =
-        (NtQueryVirtualMemoryProc)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryVirtualMemory");
-    if (!NtQueryVirtualMemory) {
-        return nullptr;
-    }
-
-    while (NT_SUCCESS(NtQueryVirtualMemory(hProcess, address, MemoryBasicInformation, &mbi, sizeof(mbi), &returnLength))) {
-        if (mbi.State != MEM_COMMIT || mbi.Type != MEM_IMAGE) {
-            address = (PBYTE)mbi.BaseAddress + mbi.RegionSize;
-            continue;
-        }
-        if (GetMappedFileNameW(hProcess, mbi.BaseAddress, name, MAX_PATH) <= 0) {
-            address = (PBYTE)mbi.BaseAddress + mbi.RegionSize;
-            continue;
-        }
-        if (wcsstr(name, L"ntdll.dll")) {
-            return mbi.AllocationBase;
-        }
-        address = (PBYTE)mbi.BaseAddress + mbi.RegionSize;
-    }
-    return nullptr;
-}
 
 PVOID InjectDll(HANDLE hProcess, const wchar_t* dllPath) {
     // Load the DLL into memory

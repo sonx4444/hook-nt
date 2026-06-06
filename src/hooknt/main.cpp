@@ -64,7 +64,9 @@ static bool PrepareTraceTarget(
     const CommandLineOptions& options,
     TraceSession* traceSession,
     std::vector<InstalledHook>* installedHooks) {
-    PVOID ntdllBase = FindNtdllBase(process);
+    // Windows maps the same-bitness system ntdll.dll at one boot-session ASLR
+    // base, so this x64 controller can use its local base for the x64 target.
+    PVOID ntdllBase = GetModuleHandleW(L"ntdll.dll");
     if (!ntdllBase) {
         fprintf(stderr, "[!] ntdll.dll not found\n");
         return false;
