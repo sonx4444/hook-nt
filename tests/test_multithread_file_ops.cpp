@@ -63,6 +63,7 @@ static void RunFileOperations(
 
 int main(int argc, char* argv[]) {
     uint32_t delayMilliseconds = 0;
+    uint32_t lingerMilliseconds = 0;
     uint32_t iterations = 1;
     for (int index = 1; index < argc; index += 2) {
         if (index + 1 >= argc) {
@@ -71,6 +72,8 @@ int main(int argc, char* argv[]) {
         }
         if (strcmp(argv[index], "--delay-ms") == 0) {
             delayMilliseconds = strtoul(argv[index + 1], nullptr, 10);
+        } else if (strcmp(argv[index], "--linger-ms") == 0) {
+            lingerMilliseconds = strtoul(argv[index + 1], nullptr, 10);
         } else if (strcmp(argv[index], "--iterations") == 0) {
             iterations = strtoul(argv[index + 1], nullptr, 10);
             if (iterations == 0) {
@@ -105,6 +108,9 @@ int main(int argc, char* argv[]) {
         thread.join();
     }
     CloseHandle(startEvent);
+    if (lingerMilliseconds > 0) {
+        Sleep(lingerMilliseconds);
+    }
 
     if (failures != 0) {
         printf("Multithreaded file operations failed: %u\n", failures.load());

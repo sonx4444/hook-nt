@@ -1,7 +1,9 @@
 #pragma once
 
 #include "common.h"
+#include "hook_manager.h"
 #include "trace_protocol.h"
+#include "trace_ring.h"
 #include <condition_variable>
 #include <deque>
 #include <fstream>
@@ -25,24 +27,30 @@ public:
     TraceSession();
     ~TraceSession();
 
-    bool Initialize(
+    bool Start(
         HANDLE targetProcess,
-        PVOID ntdllBase,
-        PVOID ntdllNBase,
+        PVOID hookImageBase,
         const TraceOutputOptions& outputOptions);
+    bool ConfigureTransport(HANDLE targetProcess, PVOID ntdllBase, PVOID hookImageBase);
+    bool CleanupRemote(HANDLE targetProcess, PVOID hookImageBase);
+    void Drain();
     void Stop();
 
 private:
     bool OpenOutput(const TraceOutputOptions& outputOptions);
-    bool CreatePipe(HANDLE targetProcess);
-    bool ConfigureRemoteTransport(HANDLE targetProcess, PVOID ntdllBase, PVOID ntdllNBase);
-    bool WriteRemoteExport(HANDLE targetProcess, PVOID ntdllNBase, const char* exportName, const void* value, SIZE_T size);
+    bool CreateSharedRing(HANDLE targetProcess);
+    void ReleaseLocalRing();
+    bool TryReadRing(TraceEvent* event);
+    bool WriteRemoteExport(HANDLE targetProcess, PVOID hookImageBase, const char* exportName, const void* value, SIZE_T size);
     void ReaderLoop();
     void WriterLoop();
     void RenderEvent(const TraceEvent& event);
 
-    HANDLE serverPipe_;
-    HANDLE remotePipeHandle_;
+    HANDLE mappingHandle_;
+    TraceRing* localRing_;
+    TraceRing* remoteRing_;
+    HANDLE wakeEvent_;
+    HANDLE remoteWakeEvent_;
     HANDLE stopEvent_;
     std::thread readerThread_;
     std::thread writerThread_;
@@ -54,5 +62,7 @@ private:
     std::ofstream outputFile_;
     TraceOutputFormat outputFormat_;
     bool quiet_;
-    uint32_t highestDroppedCount_;
+    uint32_t reportedDroppedCount_;
+    RemoteTrampoline setEventBypass_;
+    RemoteTrampoline readMemoryBypass_;
 };

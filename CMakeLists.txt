@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(hookNt VERSION 0.3.0 LANGUAGES C CXX)
+project(ApiScope VERSION 0.4.0 LANGUAGES C CXX)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
@@ -18,11 +18,11 @@ else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# Configure DiStorm
-include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/distorm.cmake)
+# Configure Zydis
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/zydis.cmake)
 
-add_subdirectory(src/hooknt)
-add_subdirectory(src/ntdlln)
+add_subdirectory(src/apiscope)
+add_subdirectory(src/apiscope-hooks)
 
 include(CTest)
 if(BUILD_TESTING)
@@ -30,4 +30,4 @@ if(BUILD_TESTING)
 endif()
 
 # Set startup project for Visual Studio
-set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT hooknt)
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT apiscope)

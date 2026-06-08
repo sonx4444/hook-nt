@@ -1,5 +1,5 @@
 name: Bug report
-description: Report reproducible HookNt behavior
+description: Report reproducible ApiScope behavior
 title: "[Bug]: "
 labels:
   - bug
@@ -22,6 +22,6 @@ body:
     id: reproduce
     attributes:
       label: Reproduction steps
-      description: Include the hooknt.exe command and relevant output.
+      description: Include the apiscope.exe command and relevant output.
     validations:
       required: true

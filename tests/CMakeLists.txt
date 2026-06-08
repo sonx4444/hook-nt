@@ -19,7 +19,7 @@ add_test(NAME multithread_file_ops COMMAND test_multithread_file_ops)
 
 add_executable(test_memory_utils
     test_memory_utils.cpp
-    ../src/hooknt/memory_utils.cpp
+    ../src/apiscope/memory_utils.cpp
 )
 target_include_directories(test_memory_utils PRIVATE
     ../src/include
@@ -31,15 +31,16 @@ add_test(NAME memory_utils COMMAND test_memory_utils)
 
 add_executable(test_patch_size
     test_patch_size.cpp
-    ../src/hooknt/hook_manager.cpp
-    ../src/hooknt/process_manager.cpp
-    ../src/hooknt/memory_utils.cpp
+    ../src/apiscope/hook_manager.cpp
+    ../src/apiscope/instruction_decoder.cpp
+    ../src/apiscope/process_manager.cpp
+    ../src/apiscope/memory_utils.cpp
 )
 target_include_directories(test_patch_size PRIVATE
     ../src/include
 )
 target_link_libraries(test_patch_size PRIVATE
-    distorm
+    Zydis
     ntdll
 )
 set_target_properties(test_patch_size PROPERTIES
@@ -49,7 +50,7 @@ add_test(NAME patch_size COMMAND test_patch_size)
 
 add_executable(test_hook_registry
     test_hook_registry.cpp
-    ../src/hooknt/hook_registry.cpp
+    ../src/apiscope/hook_registry.cpp
 )
 target_include_directories(test_hook_registry PRIVATE
     ../src/include
@@ -57,12 +58,12 @@ target_include_directories(test_hook_registry PRIVATE
 set_target_properties(test_hook_registry PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
-add_test(NAME hook_registry COMMAND test_hook_registry $<TARGET_FILE:ntdlln>)
+add_test(NAME hook_registry COMMAND test_hook_registry $<TARGET_FILE:apiscope-hooks>)
 
 add_executable(test_cli_options
     test_cli_options.cpp
-    ../src/hooknt/cli_options.cpp
-    ../src/hooknt/hook_registry.cpp
+    ../src/apiscope/cli_options.cpp
+    ../src/apiscope/hook_registry.cpp
 )
 target_include_directories(test_cli_options PRIVATE
     ../src/include
@@ -74,9 +75,9 @@ add_test(NAME cli_options COMMAND test_cli_options)
 
 add_executable(test_trace_renderer
     test_trace_renderer.cpp
-    ../src/hooknt/trace_renderer.cpp
-    ../src/ntdlln/trace_transport.cpp
-    ../src/hooknt/memory_utils.cpp
+    ../src/apiscope/trace_renderer.cpp
+    ../src/apiscope-hooks/trace_transport.cpp
+    ../src/apiscope/memory_utils.cpp
 )
 target_include_directories(test_trace_renderer PRIVATE
     ../src/include
@@ -88,8 +89,8 @@ add_test(NAME trace_renderer COMMAND test_trace_renderer)
 
 add_executable(test_trace_transport
     test_trace_transport.cpp
-    ../src/ntdlln/trace_transport.cpp
-    ../src/hooknt/memory_utils.cpp
+    ../src/apiscope-hooks/trace_transport.cpp
+    ../src/apiscope/memory_utils.cpp
 )
 target_include_directories(test_trace_transport PRIVATE
     ../src/include
@@ -98,3 +99,16 @@ set_target_properties(test_trace_transport PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 add_test(NAME trace_transport COMMAND test_trace_transport)
+
+add_executable(test_delayed_bcrypt test_delayed_bcrypt.cpp)
+target_link_libraries(test_delayed_bcrypt PRIVATE kernel32)
+set_target_properties(test_delayed_bcrypt PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+add_test(NAME delayed_bcrypt COMMAND test_delayed_bcrypt)
+
+add_executable(test_send_ctrl_break test_send_ctrl_break.cpp)
+target_link_libraries(test_send_ctrl_break PRIVATE kernel32)
+set_target_properties(test_send_ctrl_break PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)

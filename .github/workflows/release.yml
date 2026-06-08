@@ -18,7 +18,7 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
       - name: Validate injected DLL contract
-        run: powershell -ExecutionPolicy Bypass -File .\scripts\validate-ntdlln.ps1 .\build\bin\Release\ntdlln.dll
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\validate-apiscope-hooks.ps1 .\build\bin\Release\apiscope-hooks.dll
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
       - name: Runtime smoke test
@@ -26,16 +26,18 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path dist\hooknt-windows-x64
-          Copy-Item build\bin\Release\hooknt.exe dist\hooknt-windows-x64
-          Copy-Item build\bin\Release\ntdlln.dll dist\hooknt-windows-x64
-          Copy-Item build\bin\Release\test_file_ops.exe dist\hooknt-windows-x64
-          Copy-Item build\bin\Release\test_multithread_file_ops.exe dist\hooknt-windows-x64
-          Copy-Item README.md dist\hooknt-windows-x64
-          Copy-Item LICENSE dist\hooknt-windows-x64
-          Compress-Archive -Path dist\hooknt-windows-x64 -DestinationPath dist\hooknt-windows-x64.zip
-          (Get-FileHash dist\hooknt-windows-x64.zip -Algorithm SHA256).Hash + "  hooknt-windows-x64.zip" | Out-File dist\SHA256SUMS.txt -Encoding ascii
+          New-Item -ItemType Directory -Path dist\apiscope-windows-x64
+          Copy-Item build\bin\Release\apiscope.exe dist\apiscope-windows-x64
+          Copy-Item build\bin\Release\apiscope-hooks.dll dist\apiscope-windows-x64
+          Copy-Item build\bin\Release\test_file_ops.exe dist\apiscope-windows-x64
+          Copy-Item build\bin\Release\test_multithread_file_ops.exe dist\apiscope-windows-x64
+          Copy-Item build\bin\Release\test_delayed_bcrypt.exe dist\apiscope-windows-x64
+          Copy-Item README.md dist\apiscope-windows-x64
+          Copy-Item LICENSE dist\apiscope-windows-x64
+          Copy-Item THIRD_PARTY_NOTICES.md dist\apiscope-windows-x64
+          Compress-Archive -Path dist\apiscope-windows-x64 -DestinationPath dist\apiscope-windows-x64.zip
+          (Get-FileHash dist\apiscope-windows-x64.zip -Algorithm SHA256).Hash + "  apiscope-windows-x64.zip" | Out-File dist\SHA256SUMS.txt -Encoding ascii
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/hooknt-windows-x64.zip dist/SHA256SUMS.txt --generate-notes --title "${{ github.ref_name }}"
+        run: gh release create "${{ github.ref_name }}" dist/apiscope-windows-x64.zip dist/SHA256SUMS.txt --generate-notes --title "${{ github.ref_name }}"

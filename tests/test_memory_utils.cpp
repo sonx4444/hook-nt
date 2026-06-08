@@ -2,7 +2,7 @@
 #include <stdio.h>
 
 int main() {
-    char source[] = "HookNt";
+    char source[] = "ApiScope";
     char destination[sizeof(source)] = {};
 
     CustomMemCpy(destination, source, sizeof(source));
@@ -13,7 +13,7 @@ int main() {
 
     CustomMemSet(destination, 'x', sizeof(destination) - 1);
     destination[sizeof(destination) - 1] = '\0';
-    if (CustomStrCmp(destination, "xxxxxx") != 0) {
+    if (CustomStrCmp(destination, "xxxxxxxx") != 0) {
         printf("CustomMemSet failed\n");
         return 1;
     }

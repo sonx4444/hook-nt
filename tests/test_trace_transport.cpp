@@ -6,66 +6,43 @@
 #include <thread>
 #include <vector>
 
-static const NTSTATUS STATUS_PIPE_BUSY_TEST = (NTSTATUS)0xC00000AEL;
 static const NTSTATUS STATUS_ACCESS_VIOLATION_TEST = (NTSTATUS)0xC0000005L;
 static const uint32_t CONCURRENT_THREAD_COUNT = 8;
 static const uint32_t EVENTS_PER_THREAD = 100;
 static const uint32_t CONCURRENT_EVENT_COUNT = CONCURRENT_THREAD_COUNT * EVENTS_PER_THREAD;
-static ULONG LastWriteLength = 0;
-static std::atomic<uint32_t> ConcurrentWrites;
 static std::atomic<uint32_t> ConcurrentFailures;
 static std::atomic<uint32_t> ConcurrentSeen[CONCURRENT_EVENT_COUNT + 1];
+static std::atomic<uint32_t> WakeCalls;
+static TraceRing TestRing;
 
-static NTSTATUS NTAPI WriteSuccess(
-    HANDLE,
-    HANDLE,
-    PIO_APC_ROUTINE,
-    PVOID,
-    PIO_STATUS_BLOCK ioStatus,
-    PVOID,
-    ULONG length,
-    PLARGE_INTEGER,
-    PULONG) {
-    LastWriteLength = length;
-    ioStatus->Information = length;
-    return 0;
-}
-
-static NTSTATUS NTAPI WriteFailure(
-    HANDLE,
-    HANDLE,
-    PIO_APC_ROUTINE,
-    PVOID,
-    PIO_STATUS_BLOCK,
-    PVOID,
-    ULONG,
-    PLARGE_INTEGER,
-    PULONG) {
-    return STATUS_PIPE_BUSY_TEST;
-}
-
-static NTSTATUS NTAPI WriteConcurrent(
-    HANDLE,
-    HANDLE,
-    PIO_APC_ROUTINE,
-    PVOID,
-    PIO_STATUS_BLOCK ioStatus,
-    PVOID buffer,
-    ULONG length,
-    PLARGE_INTEGER,
-    PULONG) {
-    const TraceEvent* event = (const TraceEvent*)buffer;
-    uint32_t sequence = event->header.sequence;
-    if (sequence == 0 ||
-        sequence > CONCURRENT_EVENT_COUNT ||
-        event->header.timestamp100ns == 0 ||
-        event->header.threadId == 0 ||
-        ConcurrentSeen[sequence].fetch_add(1, std::memory_order_relaxed) != 0) {
-        ConcurrentFailures.fetch_add(1, std::memory_order_relaxed);
+static void InitializeTestRing() {
+    ZeroMemory(&TestRing, sizeof(TestRing));
+    TestRing.magic = TRACE_RING_MAGIC;
+    TestRing.version = TRACE_RING_VERSION;
+    TestRing.capacity = TRACE_RING_CAPACITY;
+    TestRing.eventSize = sizeof(TraceEvent);
+    for (uint32_t index = 0; index < TRACE_RING_CAPACITY; ++index) {
+        TestRing.slots[index].sequence = index;
     }
-    ConcurrentWrites.fetch_add(1, std::memory_order_relaxed);
-    ioStatus->Information = length;
+    TransportRing = &TestRing;
+}
+
+static NTSTATUS NTAPI SetEventSuccess(HANDLE, PLONG) {
+    WakeCalls.fetch_add(1, std::memory_order_relaxed);
     return 0;
+}
+
+static bool ReadTestRing(TraceEvent* event) {
+    LONG64 position = TestRing.dequeuePosition;
+    TraceRingSlot* slot =
+        &TestRing.slots[(uint64_t)position & (TRACE_RING_CAPACITY - 1)];
+    if (slot->sequence != position + 1) {
+        return false;
+    }
+    *event = slot->event;
+    slot->sequence = position + TRACE_RING_CAPACITY;
+    TestRing.dequeuePosition = position + 1;
+    return true;
 }
 
 static NTSTATUS NTAPI ReadSuccess(HANDLE, PVOID source, PVOID destination, ULONG length, PULONG captured) {
@@ -80,7 +57,9 @@ static NTSTATUS NTAPI ReadFailure(HANDLE, PVOID, PVOID, ULONG, PULONG captured) 
 }
 
 static TraceBytesValue* FindBytesValue(TraceEvent* event, const char* expectedName) {
-    BYTE* cursor = event->payload + event->header.apiNameLength;
+    BYTE* cursor = event->payload +
+        event->header.moduleNameLength +
+        event->header.apiNameLength;
     for (uint16_t index = 0; index < event->header.fieldCount; ++index) {
         TraceFieldHeader* field = (TraceFieldHeader*)cursor;
         cursor += sizeof(*field);
@@ -95,15 +74,19 @@ static TraceBytesValue* FindBytesValue(TraceEvent* event, const char* expectedNa
 }
 
 int main() {
-    TransportPipeHandle = (HANDLE)1;
-    TransportSequence = 0;
-    TransportDroppedEvents = 0;
+    InitializeTestRing();
+    WakeCalls = 0;
+    TransportWakeEvent = (HANDLE)1;
+    TransportNtSetEvent = (PVOID)SetEventSuccess;
 
     TraceEvent event;
-    if (!InitializeTraceEvent(&event, "NtCreateFile") ||
+    if (!InitializeTraceEvent(&event, "ntdll.dll", "NtCreateFile") ||
         !AddTracePointer(&event, "handle", (PVOID)0x1234) ||
         !AddTraceUInt32(&event, "small", 7) ||
         !AddTraceUInt64(&event, "large", 0x123456789ULL) ||
+        !AddTraceInt32(&event, "signed_small", -7) ||
+        !AddTraceInt64(&event, "signed_large", -9) ||
+        !AddTraceBoolean(&event, "enabled", true) ||
         !AddTraceStatus(&event, "result", STATUS_ACCESS_VIOLATION_TEST) ||
         event.header.timestamp100ns == 0 ||
         event.header.threadId == 0 ||
@@ -121,20 +104,29 @@ int main() {
         return 1;
     }
 
-    TransportNtWriteFile = (PVOID)WriteFailure;
-    if (EmitTraceEvent(&event) || TransportDroppedEvents != 1) {
-        printf("Failed transport write did not increment drop count\n");
+    if (!EmitTraceEvent(&event)) {
+        printf("Shared ring enqueue failed\n");
         return 1;
     }
-
-    TransportNtWriteFile = (PVOID)WriteSuccess;
-    if (!EmitTraceEvent(&event) ||
-        event.header.droppedBefore != 1 ||
-        event.header.sequence != 2 ||
-        LastWriteLength != event.header.size) {
-        printf("Variable-length transport write did not preserve counters\n");
+    TraceEvent received;
+    if (!ReadTestRing(&received) ||
+        received.header.sequence != 1 ||
+        received.header.size != event.header.size ||
+        WakeCalls != 1) {
+        printf("Shared ring did not preserve event metadata\n");
         return 1;
     }
+    if (!EmitTraceEvent(&event) || WakeCalls != 1 || !ReadTestRing(&received)) {
+        printf("Shared ring wakeups were not coalesced\n");
+        return 1;
+    }
+    TestRing.wakePending = 0;
+    if (!EmitTraceEvent(&event) || WakeCalls != 2 || !ReadTestRing(&received)) {
+        printf("Shared ring did not signal a new event burst\n");
+        return 1;
+    }
+    TransportWakeEvent = nullptr;
+    TransportNtSetEvent = nullptr;
 
     const char source[] = "Hello";
     TransportNtReadVirtualMemory = (PVOID)ReadSuccess;
@@ -162,7 +154,7 @@ int main() {
     }
 
     TraceEvent full;
-    InitializeTraceEvent(&full, "NtLargeEvent");
+    InitializeTraceEvent(&full, "test.dll", "LargeEvent");
     TransportNtReadVirtualMemory = (PVOID)ReadSuccess;
     for (uint32_t index = 0; index < 100; ++index) {
         char name[16];
@@ -176,17 +168,45 @@ int main() {
         return 1;
     }
 
-    TransportNtWriteFile = (PVOID)WriteConcurrent;
-    TransportSequence = 0;
-    TransportDroppedEvents = 0;
-    ConcurrentWrites = 0;
+    InitializeTestRing();
+    for (uint32_t index = 0; index < TRACE_RING_CAPACITY; ++index) {
+        TraceEvent queued;
+        InitializeTraceEvent(&queued, "test.dll", "Full");
+        if (!EmitTraceEvent(&queued)) {
+            printf("Shared ring filled before reaching capacity\n");
+            return 1;
+        }
+    }
+    TraceEvent dropped;
+    InitializeTraceEvent(&dropped, "test.dll", "Dropped");
+    if (EmitTraceEvent(&dropped) || TestRing.droppedEvents != 1) {
+        printf("Full shared ring did not report a dropped event\n");
+        return 1;
+    }
+    if (!ReadTestRing(&received)) {
+        printf("Could not release a full shared ring slot\n");
+        return 1;
+    }
+    TraceEvent recovered;
+    InitializeTraceEvent(&recovered, "test.dll", "Recovered");
+    if (!EmitTraceEvent(&recovered) || TestRing.droppedEvents != 1) {
+        printf("Shared ring did not recover after a dropped event\n");
+        return 1;
+    }
+    while (ReadTestRing(&received)) {
+    }
+
+    InitializeTestRing();
     ConcurrentFailures = 0;
+    for (uint32_t index = 0; index <= CONCURRENT_EVENT_COUNT; ++index) {
+        ConcurrentSeen[index] = 0;
+    }
     std::vector<std::thread> threads;
     for (uint32_t index = 0; index < CONCURRENT_THREAD_COUNT; ++index) {
         threads.emplace_back([]() {
             for (uint32_t index = 0; index < EVENTS_PER_THREAD; ++index) {
                 TraceEvent concurrentEvent;
-                if (!InitializeTraceEvent(&concurrentEvent, "NtConcurrent") ||
+                if (!InitializeTraceEvent(&concurrentEvent, "test.dll", "Concurrent") ||
                     !EmitTraceEvent(&concurrentEvent)) {
                     ConcurrentFailures.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -196,10 +216,22 @@ int main() {
     for (std::thread& thread : threads) {
         thread.join();
     }
-    if (ConcurrentWrites != CONCURRENT_EVENT_COUNT ||
+    uint32_t concurrentEvents = 0;
+    while (ReadTestRing(&received)) {
+        uint32_t sequence = received.header.sequence;
+        if (sequence == 0 ||
+            sequence > CONCURRENT_EVENT_COUNT ||
+            received.header.timestamp100ns == 0 ||
+            received.header.threadId == 0 ||
+            ConcurrentSeen[sequence].fetch_add(1, std::memory_order_relaxed) != 0) {
+            ConcurrentFailures.fetch_add(1, std::memory_order_relaxed);
+        }
+        ++concurrentEvents;
+    }
+    if (concurrentEvents != CONCURRENT_EVENT_COUNT ||
         ConcurrentFailures != 0 ||
-        TransportSequence != CONCURRENT_EVENT_COUNT ||
-        TransportDroppedEvents != 0) {
+        TestRing.eventSequence != CONCURRENT_EVENT_COUNT ||
+        TestRing.droppedEvents != 0) {
         printf("Concurrent transport writes did not preserve event metadata and counters\n");
         return 1;
     }

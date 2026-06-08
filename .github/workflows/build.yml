@@ -14,7 +14,7 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
       - name: Validate injected DLL contract
-        run: powershell -ExecutionPolicy Bypass -File .\scripts\validate-ntdlln.ps1 .\build\bin\Release\ntdlln.dll
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\validate-apiscope-hooks.ps1 .\build\bin\Release\apiscope-hooks.dll
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
       - name: Runtime smoke test
@@ -22,9 +22,10 @@ jobs:
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
-          name: hooknt-windows-x64
+          name: apiscope-windows-x64
           path: |
-            build/bin/Release/hooknt.exe
-            build/bin/Release/ntdlln.dll
+            build/bin/Release/apiscope.exe
+            build/bin/Release/apiscope-hooks.dll
             build/bin/Release/test_file_ops.exe
             build/bin/Release/test_multithread_file_ops.exe
+            build/bin/Release/test_delayed_bcrypt.exe

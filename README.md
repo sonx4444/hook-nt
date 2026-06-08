@@ -1,205 +1,232 @@
-# HookNt
+# ApiScope
 
-[![Build](https://github.com/sonx4444/hook-nt/actions/workflows/build.yml/badge.svg)](https://github.com/sonx4444/hook-nt/actions/workflows/build.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Build](https://github.com/sonx4444/apiscope/actions/workflows/build.yml/badge.svg)](https://github.com/sonx4444/apiscope/actions/workflows/build.yml)
+[![CodeQL](https://github.com/sonx4444/apiscope/actions/workflows/codeql.yml/badge.svg)](https://github.com/sonx4444/apiscope/actions/workflows/codeql.yml)
 
-HookNt is a small Windows x64 research tool for observing selected NT file APIs in a process launched under its control or attached by PID. It maps an import-free hook DLL, installs trampolines in `ntdll.dll`, and sends structured events to the launcher over a named pipe.
+ApiScope is a Windows x64 research tool for tracing selected API calls in a
+new or running process. It follows DLL load events through the Windows debugger
+API and installs hooks before the debuggee continues from each event.
 
-## Quick Start
+Included hooks:
+
+- `ntdll.dll!NtCreateFile`
+- `ntdll.dll!NtReadFile`
+- `ntdll.dll!NtWriteFile`
+- `bcrypt.dll!BCryptOpenAlgorithmProvider`
+
+## Demo
+
+[![ApiScope demo](./demo/demo_run.gif)](./demo/demo_run.mp4)
+
+[Watch the MP4 video](./demo/demo_run.mp4).
+
+## Build
 
 Requirements:
 
 - Windows x64
 - Visual Studio 2019 or newer with the C++ workload
 - CMake 3.20 or newer
-- Git, used by CMake to fetch DiStorm when the submodule is absent
-
-Build and run the end-to-end smoke test:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\smoke.ps1
-```
-
-Or build manually:
-
-```cmd
-build.bat
-cd build\bin\Release
-hooknt.exe run -k all -- test_file_ops.exe
-```
-
-`build.bat` configures a Release build, compiles the project, validates the injected DLL contract during the build, and runs the CTest suite.
-
-## Demo
-
-Trace Notepad while teeing structured JSONL events to `trace.jsonl`:
-
-```cmd
-.\hooknt.exe run --hook all --format jsonl --output trace.jsonl -- C:\Windows\System32\notepad.exe
-```
-
-![HookNt tracing Notepad](./imgs/demo_run.gif)
-
-[View the MP4 recording](./imgs/demo_run.mp4).
-
-Example terminal output:
-
-```text
-[*] NtWriteFile ----------
-    timestamp     : 2026-06-01T12:34:56.1234567Z
-    thread_id     : 4240
-    sequence      : 3
-    dropped_before: 0
-    file_handle   : 0x000000000000004C
-    length        : 14
-    buffer        : 48 65 6C 6C 6F 2C 20 48 6F 6F 6B 4E 74 21
-    buffer_text   : Hello, HookNt!
-    buffer_status : 0x00000000
-    result        : 0x00000000
-```
-
-## Supported Hooks
-
-```text
-NtCreateFile
-NtReadFile
-NtWriteFile
-```
-
-Usage:
-
-```text
-hooknt.exe [--help | --version | --list-hooks]
-hooknt.exe run -k <name|all> [-k <name>] [-f text|jsonl] [-o <path>] [-q] -- <program> [args...]
-hooknt.exe attach -p <pid> -k <name|all> [-k <name>] [-f text|jsonl] [-o <path>] [-q]
-```
-
-Short options map directly to their long forms: `-h` is `--help`, `-V` is `--version`, `-l` is `--list-hooks`, `-k` is `--hook`, `-f` is `--format`, `-o` is `--output`, and `-q` is `--quiet`.
-
-Attach to an existing process and log until it exits:
-
-```cmd
-hooknt.exe attach -p 4242 -k all -f jsonl -o trace.jsonl
-```
-
-Attach briefly suspends the target while the DLL, transport, and hooks are installed, then resumes it. The target must be a Windows x64 process that the current user can open with query, VM, duplicate-handle, synchronization, and suspend/resume rights. Elevated targets may require running `hooknt.exe` from an elevated terminal.
-
-`--list-hooks` discovers supported hooks from exported symbol pairs in `ntdlln.dll`. `--hook all` enables every discovered hook. Trace events are rendered as readable text in the terminal. `--output` tees events to a file, with optional JSONL formatting. `--format` is used only with `--output`:
-
-```cmd
-hooknt.exe run --hook all --format jsonl --output trace.jsonl -- test_file_ops.exe
-```
-
-Use `--quiet` with `--output` to suppress the terminal event mirror. Unsupported hook names fail before a target process is launched or suspended.
-
-JSONL events use the same generic fields emitted by each hook:
-
-```json
-{"sequence":3,"dropped_before":0,"timestamp":"2026-06-01T12:34:56.1234567Z","timestamp_100ns":134247908961234567,"thread_id":4240,"api":"NtWriteFile","status":0,"truncated":false,"field_error":false,"fields":{"file_handle":136,"length":14,"buffer":{"type":"bytes","requested":14,"captured":14,"capture_status":0,"hex":"48656C6C6F2C20486F6F6B4E7421","text":"Hello, HookNt!"}}}
-```
-
-## Adding A Hook
-
-Each hook is a standalone file under `src/ntdlln/hooks/`. A hook is available automatically when the DLL exports a matching pair:
-
-```text
-NtNewFunctionN
-NtNewFunctionTrampoline
-```
-
-Use `DEFINE_NT_HOOK` and `CALL_ORIGINAL` from `nt_hook.h`. Emit a bounded protocol event through `trace_transport.h`:
-
-```cpp
-#include "nt_hook.h"
-#include "trace_transport.h"
-
-DEFINE_NT_HOOK(NtNewFunction, HANDLE Handle) {
-    TraceEvent event;
-    InitializeTraceEvent(&event, "NtNewFunction");
-    AddTracePointer(&event, "handle", Handle);
-    NTSTATUS result = CALL_ORIGINAL(NtNewFunction, Handle);
-    event.header.status = result;
-    EmitTraceEvent(&event);
-    return result;
-}
-```
-
-The event builder supports pointers, `uint32`, `uint64`, NT status values, and bounded buffer previews. Field names use lower `snake_case`. Events are self-describing, so no central schema table, renderer branch, or launcher allowlist needs editing. Rebuild and verify registration:
-
-```cmd
-hooknt.exe --list-hooks
-```
-
-## How It Works
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant HookNt as hooknt.exe
-    participant Target as Target process
-    participant NTDLL as ntdll.dll
-    participant Hooks as ntdlln.dll
-
-    User->>HookNt: Launch target or attach by PID
-    HookNt->>Target: Create or briefly suspend process
-    HookNt->>Target: Map ntdlln.dll
-    HookNt->>Target: Duplicate named-pipe client handle
-    HookNt->>NTDLL: Create unpatched transport bypass trampolines
-    loop Each requested hook
-        HookNt->>NTDLL: Resolve NT export
-        HookNt->>Hooks: Resolve hook and trampoline slot
-        HookNt->>Target: Allocate trampoline and patch export
-    end
-    HookNt->>Target: Resume and wait
-    Target->>Hooks: Capture bounded event and invoke original trampoline
-    Hooks->>NTDLL: Continue original function
-    Hooks->>HookNt: Write event through unpatched NtWriteFile bypass
-```
-
-The hook DLL has no imports, TLS callbacks, or entry point, matching the minimal mapper's contract. It writes self-describing binary TLV events with an unpatched `NtWriteFile` bypass, so tracing `NtWriteFile` does not recurse. Every event receives a hook-entry timestamp from the shared user-data page and the originating thread ID from the x64 TEB. Each event uses only its initialized bytes within a fixed 1024-byte stack capacity. Buffer previews use an unpatched `NtReadVirtualMemory` bypass and stay bounded at 64 bytes. Pipe writes are nonblocking; events are dropped and counted when the reader cannot keep up.
-
-The patcher disassembles complete instructions until it has enough bytes for an x64 absolute jump. It rejects RIP-relative and relative-control-flow instructions because copied trampoline instructions are not relocated yet.
-
-## Project Layout
-
-```text
-cmake/              DiStorm dependency configuration
-scripts/            End-to-end smoke test
-src/hooknt/         Launcher, mapper, and patcher
-src/ntdlln/         Injected hook DLL and standalone hook modules
-src/include/        Shared headers
-tests/              CTest targets
-```
-
-## Build And Test
+- Git, used by CMake to fetch the pinned Zydis decoder
 
 ```powershell
 cmake -S . -B build -A x64
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
-powershell -ExecutionPolicy Bypass -File .\scripts\validate-ntdlln.ps1 .\build\bin\Release\ntdlln.dll
+powershell -ExecutionPolicy Bypass -File .\scripts\validate-apiscope-hooks.ps1 .\build\bin\Release\apiscope-hooks.dll
 powershell -ExecutionPolicy Bypass -File .\scripts\smoke.ps1 -SkipBuild
 ```
 
-DiStorm is fetched automatically at its pinned commit when `libs/distorm` is not initialized. Existing submodule checkouts continue to work.
+Zydis v4.1.1 is fetched at a pinned commit and linked only into
+`apiscope.exe`. The injected `apiscope-hooks.dll` remains import-free.
 
-The smoke suite covers suspended launch, short CLI aliases, JSONL tee output, quiet mode, concurrent file operations, and attach-by-PID against a running multithreaded target.
+## Usage
+
+```text
+apiscope.exe [--help | --version | --list-hooks]
+apiscope.exe run -k <module!export|all> [-k <module!export>] [-f text|jsonl] [-o <path>] [-q] -- <program> [args...]
+apiscope.exe attach -p <pid> -k <module!export|all> [-k <module!export>] [-f text|jsonl] [-o <path>] [-q]
+```
+
+Hook names are always module-qualified. Module matching is case-insensitive;
+export matching is case-sensitive.
+
+```powershell
+.\apiscope.exe run `
+  --hook ntdll.dll!NtCreateFile `
+  --hook bcrypt.dll!BCryptOpenAlgorithmProvider `
+  -- C:\path\app.exe
+
+.\apiscope.exe attach --pid 4242 --hook all
+
+.\apiscope.exe run --hook all --format jsonl --output trace.jsonl --quiet -- app.exe
+```
+
+Terminal events remain readable while `--output` optionally tees text or JSONL
+to a file. `--quiet` suppresses the terminal event mirror.
+
+```text
+[*] ntdll.dll!NtWriteFile ----------
+    timestamp      : 2026-06-07T17:44:23.3834340Z
+    thread_id      : 3508
+    sequence       : 3
+    file_handle    : 0x000000000000008C
+    length         : 16
+    buffer_text    : Hello, ApiScope!
+    result         : 0x00000000
+```
+
+JSONL events contain generic metadata and hook-local fields:
+
+```json
+{"sequence":1,"module":"bcrypt.dll","api":"BCryptOpenAlgorithmProvider","hook":"bcrypt.dll!BCryptOpenAlgorithmProvider","fields":{"flags":0,"result":{"type":"status","value":0,"hex":"0x00000000"}}}
+```
+
+Press Ctrl+C or Ctrl+Break to restore active hooks, release remote
+instrumentation, and detach. The target continues running. On natural exit,
+ApiScope prints the target status in decimal and hexadecimal.
+
+## Adding A Hook
+
+Each hook is one file under `src/apiscope-hooks/hooks/` and declares its source
+module, export, handler, trampoline slot, calling convention, and signature
+together:
+
+```cpp
+DEFINE_API_HOOK(
+    BCryptOpenAlgorithmProvider,
+    "bcrypt.dll",
+    "BCryptOpenAlgorithmProvider",
+    NTSTATUS,
+    WINAPI,
+    PVOID* Algorithm,
+    const wchar_t* AlgorithmId,
+    const wchar_t* Implementation,
+    ULONG Flags) {
+    TraceEvent event;
+    InitializeTraceEvent(&event, "bcrypt.dll", "BCryptOpenAlgorithmProvider");
+    AddTraceUInt32(&event, "flags", Flags);
+
+    NTSTATUS result = CALL_ORIGINAL(
+        BCryptOpenAlgorithmProvider,
+        Algorithm,
+        AlgorithmId,
+        Implementation,
+        Flags);
+    AddTraceStatus(&event, "result", result);
+    EmitTraceEvent(&event);
+    return result;
+}
+```
+
+`apiscope.exe --list-hooks` discovers fixed-layout descriptors exported by the
+hook DLL. No central API list or launcher-side event schema is required.
+
+## How It Works
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant ApiScope as apiscope.exe
+    participant Debugger as Windows debugger API
+    participant Target as Target process
+    participant Modules as Loaded DLLs
+    participant Hooks as apiscope-hooks.dll
+    participant Ring as Shared-memory ring
+
+    User->>ApiScope: run program or attach PID
+    alt run
+        ApiScope->>Debugger: CreateProcess(DEBUG_ONLY_THIS_PROCESS)
+    else attach
+        ApiScope->>Debugger: DebugActiveProcess(PID)
+    end
+    ApiScope->>Debugger: DebugSetProcessKillOnExit(FALSE)
+    Debugger-->>ApiScope: CREATE_PROCESS_DEBUG_EVENT
+    ApiScope->>Target: Map import-free hook image
+    ApiScope->>Ring: Create and initialize bounded ring
+    ApiScope->>Target: Map shared section with NtMapViewOfSection
+
+    loop CREATE_PROCESS / LOAD_DLL events
+        Debugger-->>ApiScope: Module base and file handle
+        ApiScope->>Modules: Register module name and base
+        alt ntdll.dll loaded
+            ApiScope->>Target: Build unpatched NtReadVirtualMemory bypass
+        end
+        ApiScope->>Modules: Resolve module.dll!Export and forwarders
+        alt export and dependencies are loaded
+            ApiScope->>Hooks: Resolve handler and trampoline slot
+            ApiScope->>Target: Allocate trampoline and patch export
+        else dependency is not loaded yet
+            ApiScope->>ApiScope: Keep hook pending
+        end
+        ApiScope->>Debugger: ContinueDebugEvent
+    end
+
+    Target->>Hooks: Call patched API
+    Hooks->>Target: CALL_ORIGINAL through trampoline
+    Hooks->>Ring: Publish bounded TLV event
+    opt first event in a pending batch
+        Hooks->>Target: Signal reader through unpatched NtSetEvent
+    end
+    Ring-->>ApiScope: Drain event batches
+    ApiScope-->>User: Readable text and optional JSONL
+
+    opt UNLOAD_DLL_DEBUG_EVENT
+        Debugger-->>ApiScope: Module unloaded
+        ApiScope->>Target: Release associated hook state
+        ApiScope->>Debugger: ContinueDebugEvent
+    end
+
+    alt target exits
+        Debugger-->>ApiScope: EXIT_PROCESS_DEBUG_EVENT and exit status
+        ApiScope->>Ring: Drain queued events
+        ApiScope-->>User: Print decimal and hexadecimal exit status
+    else Ctrl+C or Ctrl+Break
+        User->>ApiScope: Stop tracing
+        ApiScope->>Target: DebugBreakProcess
+        ApiScope->>Target: Restore hooks and free instrumentation
+        ApiScope->>Debugger: DebugActiveProcessStop
+        ApiScope-->>User: Target continues running
+    end
+```
+
+The controller creates a paging-file-backed section and maps it into both
+processes. Hook threads publish to a fixed-capacity, multi-producer ring using
+per-slot sequence numbers. An unpatched `NtSetEvent` bypass sends one coalesced
+wakeup for each pending batch, and the controller drains events in batches.
+Producers never wait for the reader; a full ring drops and counts the event.
+Buffer previews still use an unpatched `NtReadVirtualMemory` bypass so invalid
+target pointers fail without crashing the hook.
+
+## Project Layout
+
+```text
+cmake/                 Dependency configuration
+scripts/               Validation and runtime smoke tests
+src/apiscope/          CLI, debugger, mapper, patcher, and renderer
+src/apiscope-hooks/    Import-free hook DLL and standalone hooks
+src/include/           Shared contracts
+tests/                 Unit and runtime test targets
+```
 
 ## Limitations
 
-- Windows x64 only.
-- Attach setup briefly suspends the target process.
-- Attach logging currently runs until target exit; stopping `hooknt.exe` early does not unload instrumentation from the target.
-- Only one HookNt session should instrument a target at a time.
-- Supports three NT file APIs.
-- Uses bounded self-describing protocol events and 64-byte buffer previews.
-- Drops trace events instead of blocking the target when the pipe is full.
-- Rejects trampolines that require instruction relocation.
-- Uses a minimal manual mapper intended for this hook DLL, not a general-purpose reflective loader.
-- Hooking security-sensitive process internals can trip endpoint security products.
+- Windows x64 only; controller and target architecture must match.
+- Only one ApiScope session should instrument a target.
+- The debugger may require elevation for protected or elevated targets.
+- Unsupported trampoline relocation fails closed.
+- Ordinal export forwarders are not supported.
+- The manual mapper is specific to the import-free hook image.
+- If ApiScope is forcibly terminated, `DebugSetProcessKillOnExit(FALSE)` keeps
+  the target alive, but hooks and mapped instrumentation remain resident until
+  the target exits.
+- Instrumenting process internals can trigger endpoint security products.
 
-Use HookNt only on systems and processes you are authorized to test. See [SECURITY.md](SECURITY.md) and [ROADMAP.md](ROADMAP.md).
+Use ApiScope only on systems and processes you are authorized to inspect. See
+[SECURITY.md](SECURITY.md), [CONTRIBUTING.md](CONTRIBUTING.md), and
+[ROADMAP.md](ROADMAP.md).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Third-party components retain their licenses; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

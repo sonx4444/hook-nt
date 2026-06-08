@@ -19,7 +19,7 @@ int main() {
     }
 
     // Write to file
-    const char* testData = "Hello, HookNt!";
+    const char* testData = "Hello, ApiScope!";
     DWORD bytesWritten = 0;
     
     if (!WriteFile(
@@ -66,4 +66,4 @@ int main() {
     // DeleteFileW(L"test_file.txt");
 
     return 0;
-} 
+}

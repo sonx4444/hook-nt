@@ -1,8 +1,12 @@
 # Security Policy
 
-HookNt modifies process memory and is intended for authorized educational and research use on Windows systems you control.
+ApiScope modifies process memory and is intended for authorized educational and research use on Windows systems you control.
 
-Attaching to an existing PID briefly suspends the target and writes executable code into its address space. Do not attach to production workloads, security-critical processes, or processes you are not authorized to inspect. Elevated targets may require running HookNt with elevated rights.
+Launching or attaching under the Windows debugger temporarily stops target threads and writes executable code into the process. Do not instrument production workloads, security-critical processes, or processes you are not authorized to inspect. Elevated targets may require running ApiScope with elevated rights.
+
+ApiScope disables the debugger's kill-on-exit behavior. Forced controller
+termination therefore leaves the target alive, but cannot restore hooks or
+release the manually mapped hook image. Prefer Ctrl+C for a clean detach.
 
 ## Reporting A Vulnerability
 

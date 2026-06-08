@@ -3,9 +3,10 @@
 #include "common.h"
 #include <stdint.h>
 
-static const uint32_t TRACE_EVENT_MAGIC = 0x544E4B48;
-static const uint16_t TRACE_EVENT_VERSION = 3;
+static const uint32_t TRACE_EVENT_MAGIC = 0x53495041;
+static const uint16_t TRACE_EVENT_VERSION = 5;
 static const size_t TRACE_MAX_EVENT_BYTES = 1024;
+static const size_t TRACE_MAX_MODULE_NAME_BYTES = 63;
 static const size_t TRACE_MAX_API_NAME_BYTES = 63;
 static const size_t TRACE_MAX_FIELD_NAME_BYTES = 63;
 static const size_t TRACE_MAX_BUFFER_BYTES = 64;
@@ -21,6 +22,9 @@ enum TraceFieldType : uint8_t {
     TraceFieldUInt64 = 3,
     TraceFieldStatus = 4,
     TraceFieldBytes = 5,
+    TraceFieldInt32 = 6,
+    TraceFieldInt64 = 7,
+    TraceFieldBoolean = 8,
 };
 
 #pragma pack(push, 1)
@@ -31,12 +35,11 @@ struct TraceEventHeader {
     uint16_t flags;
     uint16_t fieldCount;
     uint32_t sequence;
-    uint32_t droppedBefore;
-    NTSTATUS status;
     uint64_t timestamp100ns;
     uint32_t threadId;
+    uint8_t moduleNameLength;
     uint8_t apiNameLength;
-    uint8_t reserved[3];
+    uint8_t reserved[2];
 };
 
 struct TraceFieldHeader {

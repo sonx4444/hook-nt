@@ -3,7 +3,7 @@
 
 static CommandLineOptions Parse(
     std::vector<std::wstring> arguments,
-    const std::vector<std::string>& availableHooks) {
+    const std::vector<HookDefinition>& availableHooks) {
     std::vector<wchar_t*> pointers;
     for (std::wstring& argument : arguments) {
         pointers.push_back(argument.data());
@@ -12,10 +12,14 @@ static CommandLineOptions Parse(
 }
 
 int main() {
-    std::vector<std::string> availableHooks = {"NtCreateFile", "NtReadFile", "NtWriteFile"};
+    std::vector<HookDefinition> availableHooks = {
+        {"bcrypt.dll", "BCryptOpenAlgorithmProvider", "", "", "bcrypt.dll!BCryptOpenAlgorithmProvider"},
+        {"ntdll.dll", "NtCreateFile", "", "", "ntdll.dll!NtCreateFile"},
+        {"ntdll.dll", "NtReadFile", "", "", "ntdll.dll!NtReadFile"},
+        {"ntdll.dll", "NtWriteFile", "", "", "ntdll.dll!NtWriteFile"}};
 
     CommandLineOptions structured = Parse(
-        {L"hooknt.exe",
+        {L"apiscope.exe",
          L"run",
          L"--hook",
          L"all",
@@ -38,10 +42,10 @@ int main() {
     }
 
     CommandLineOptions shortOptions = Parse(
-        {L"hooknt.exe",
+        {L"apiscope.exe",
          L"run",
          L"-k",
-         L"NtCreateFile",
+         L"ntdll.dll!NtCreateFile",
          L"-f",
          L"jsonl",
          L"-o",
@@ -52,7 +56,7 @@ int main() {
         availableHooks);
     if (shortOptions.mode != CommandMode::Run ||
         shortOptions.hooks.size() != 1 ||
-        shortOptions.hooks[0] != "NtCreateFile" ||
+        shortOptions.hooks[0].canonicalName != "ntdll.dll!NtCreateFile" ||
         shortOptions.output.format != TraceOutputFormat::Jsonl ||
         shortOptions.output.outputPath != L"trace.jsonl" ||
         !shortOptions.output.quiet) {
@@ -60,16 +64,16 @@ int main() {
         return 1;
     }
 
-    if (Parse({L"hooknt.exe", L"-l"}, availableHooks).mode != CommandMode::ListHooks ||
-        Parse({L"hooknt.exe", L"-h"}, availableHooks).mode != CommandMode::Help ||
-        Parse({L"hooknt.exe", L"--version"}, availableHooks).mode != CommandMode::Version ||
-        Parse({L"hooknt.exe", L"-V"}, availableHooks).mode != CommandMode::Version) {
+    if (Parse({L"apiscope.exe", L"-l"}, availableHooks).mode != CommandMode::ListHooks ||
+        Parse({L"apiscope.exe", L"-h"}, availableHooks).mode != CommandMode::Help ||
+        Parse({L"apiscope.exe", L"--version"}, availableHooks).mode != CommandMode::Version ||
+        Parse({L"apiscope.exe", L"-V"}, availableHooks).mode != CommandMode::Version) {
         printf("Short top-level options did not parse\n");
         return 1;
     }
 
     CommandLineOptions attach = Parse(
-        {L"hooknt.exe",
+        {L"apiscope.exe",
          L"attach",
          L"-p",
          L"4242",
@@ -92,7 +96,7 @@ int main() {
     }
 
     CommandLineOptions invalidAttachPid = Parse(
-        {L"hooknt.exe", L"attach", L"-p", L"invalid", L"-k", L"all"},
+        {L"apiscope.exe", L"attach", L"-p", L"invalid", L"-k", L"all"},
         availableHooks);
     if (invalidAttachPid.mode != CommandMode::Error) {
         printf("Invalid attach process ID was not rejected\n");
@@ -106,7 +110,7 @@ int main() {
     }
 
     CommandLineOptions legacy = Parse(
-        {L"hooknt.exe", L"test.exe", L"NtCreateFile"},
+        {L"apiscope.exe", L"test.exe", L"ntdll.dll!NtCreateFile"},
         availableHooks);
     if (legacy.mode != CommandMode::Error) {
         printf("Legacy command was not rejected\n");
@@ -114,7 +118,7 @@ int main() {
     }
 
     CommandLineOptions terminalOnly = Parse(
-        {L"hooknt.exe", L"run", L"--hook", L"NtCreateFile", L"--", L"test.exe"},
+        {L"apiscope.exe", L"run", L"--hook", L"ntdll.dll!NtCreateFile", L"--", L"test.exe"},
         availableHooks);
     if (terminalOnly.mode != CommandMode::Run ||
         terminalOnly.output.quiet ||
@@ -124,7 +128,7 @@ int main() {
     }
 
     CommandLineOptions invalidFormat = Parse(
-        {L"hooknt.exe", L"run", L"--hook", L"all", L"--format", L"jsonl", L"--", L"test.exe"},
+        {L"apiscope.exe", L"run", L"--hook", L"all", L"--format", L"jsonl", L"--", L"test.exe"},
         availableHooks);
     if (invalidFormat.mode != CommandMode::Error) {
         printf("Format without output path was not rejected\n");
@@ -132,7 +136,7 @@ int main() {
     }
 
     CommandLineOptions invalidQuiet = Parse(
-        {L"hooknt.exe", L"run", L"--hook", L"all", L"--quiet", L"--", L"test.exe"},
+        {L"apiscope.exe", L"run", L"--hook", L"all", L"--quiet", L"--", L"test.exe"},
         availableHooks);
     if (invalidQuiet.mode != CommandMode::Error) {
         printf("Quiet mode without output path was not rejected\n");
@@ -140,10 +144,35 @@ int main() {
     }
 
     CommandLineOptions invalidRunPid = Parse(
-        {L"hooknt.exe", L"run", L"-p", L"4242", L"-k", L"all", L"--", L"test.exe"},
+        {L"apiscope.exe", L"run", L"-p", L"4242", L"-k", L"all", L"--", L"test.exe"},
         availableHooks);
     if (invalidRunPid.mode != CommandMode::Error) {
         printf("Run process ID was not rejected\n");
+        return 1;
+    }
+
+    CommandLineOptions unqualified = Parse(
+        {L"apiscope.exe", L"run", L"-k", L"NtCreateFile", L"--", L"test.exe"},
+        availableHooks);
+    if (unqualified.mode != CommandMode::Error) {
+        printf("Unqualified hook name was not rejected\n");
+        return 1;
+    }
+
+    CommandLineOptions moduleCase = Parse(
+        {L"apiscope.exe", L"run", L"-k", L"NTDLL.DLL!NtCreateFile", L"--", L"test.exe"},
+        availableHooks);
+    if (moduleCase.mode != CommandMode::Run ||
+        moduleCase.hooks[0].canonicalName != "ntdll.dll!NtCreateFile") {
+        printf("Case-insensitive module name was not accepted\n");
+        return 1;
+    }
+
+    CommandLineOptions exportCase = Parse(
+        {L"apiscope.exe", L"run", L"-k", L"ntdll.dll!ntcreatefile", L"--", L"test.exe"},
+        availableHooks);
+    if (exportCase.mode != CommandMode::Error) {
+        printf("Case-insensitive export name was accepted\n");
         return 1;
     }
 

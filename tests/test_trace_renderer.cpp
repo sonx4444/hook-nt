@@ -11,7 +11,9 @@ static NTSTATUS NTAPI ReadSuccess(HANDLE, PVOID source, PVOID destination, ULONG
 }
 
 static BYTE* FindField(TraceEvent* event, const char* expectedName) {
-    BYTE* cursor = event->payload + event->header.apiNameLength;
+    BYTE* cursor = event->payload +
+        event->header.moduleNameLength +
+        event->header.apiNameLength;
     for (uint16_t index = 0; index < event->header.fieldCount; ++index) {
         TraceFieldHeader* field = (TraceFieldHeader*)cursor;
         cursor += sizeof(*field);
@@ -29,9 +31,10 @@ int main() {
     const char preview[] = "Hello";
 
     TraceEvent event;
-    InitializeTraceEvent(&event, "NtFutureApi");
+    InitializeTraceEvent(&event, "future.dll", "FutureApi");
     AddTraceUInt32(&event, "answer", 42);
     AddTraceUInt32(&event, "second", 7);
+    AddTraceBoolean(&event, "enabled", true);
     AddTraceBufferPreview(&event, "buffer", preview, 5);
     if (!IsValidTraceEvent(event, event.header.size)) {
         printf("Valid generic trace event was rejected\n");
@@ -40,10 +43,13 @@ int main() {
 
     std::ostringstream json;
     RenderTraceEventJsonl(json, event);
-    if (json.str().find("\"api\":\"NtFutureApi\"") == std::string::npos ||
+    if (json.str().find("\"module\":\"future.dll\"") == std::string::npos ||
+        json.str().find("\"api\":\"FutureApi\"") == std::string::npos ||
+        json.str().find("\"hook\":\"future.dll!FutureApi\"") == std::string::npos ||
         json.str().find("\"timestamp_100ns\":") == std::string::npos ||
         json.str().find("\"thread_id\":") == std::string::npos ||
         json.str().find("\"answer\":42") == std::string::npos ||
+        json.str().find("\"enabled\":true") == std::string::npos ||
         json.str().find("\"buffer\":{\"type\":\"bytes\"") == std::string::npos ||
         json.str().find("\"text\":\"Hello\"") == std::string::npos) {
         printf("Generic JSON renderer output was incomplete\n");
@@ -52,11 +58,10 @@ int main() {
 
     std::ostringstream text;
     RenderTraceEventText(text, event);
-    if (text.str().find("[*] NtFutureApi") == std::string::npos ||
-        text.str().find("    timestamp     : ") == std::string::npos ||
-        text.str().find("    thread_id     : ") == std::string::npos ||
-        text.str().find("    answer        : 42") == std::string::npos ||
-        text.str().find("    result        : 0x00000000") == std::string::npos ||
+    if (text.str().find("[*] future.dll!FutureApi") == std::string::npos ||
+        text.str().find("    timestamp    : ") == std::string::npos ||
+        text.str().find("    thread_id    : ") == std::string::npos ||
+        text.str().find("    answer       : 42") == std::string::npos ||
         text.str().find("Hello") == std::string::npos) {
         printf("Generic text renderer output was incomplete\n");
         return 1;

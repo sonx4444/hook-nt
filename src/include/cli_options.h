@@ -15,7 +15,7 @@ enum class CommandMode {
 
 struct CommandLineOptions {
     CommandMode mode;
-    std::vector<std::string> hooks;
+    std::vector<HookDefinition> hooks;
     std::vector<std::wstring> targetArguments;
     DWORD targetProcessId;
     TraceOutputOptions output;
@@ -25,6 +25,6 @@ struct CommandLineOptions {
 CommandLineOptions ParseCommandLine(
     int argc,
     wchar_t* argv[],
-    const std::vector<std::string>& availableHooks);
+    const std::vector<HookDefinition>& availableHooks);
 std::wstring BuildWindowsCommandLine(const std::vector<std::wstring>& arguments);
 void PrintUsage();
